@@ -256,10 +256,31 @@ index d85fcb38d..7b8cc84e1 100644
              self._session_id = str(session_id).strip()
  
 diff --git a/run_agent.py b/run_agent.py
-index 3da8f2517..3b2eff716 100644
+index 3da8f2517..b40352032 100644
 --- a/run_agent.py
 +++ b/run_agent.py
-@@ -11463,6 +11463,29 @@ class AIAgent:
+@@ -10446,6 +10446,20 @@ class AIAgent:
+             except Exception:
+                 pass  # Non-blocking
+ 
++            # Disclosure Router Interceptor: block known failure patterns.
++            # Inspired by Nocturne Memory (https://github.com/Dataojitori/nocturne_memory).
++            # Catches tool calls that have consistently failed before and
++            # redirects to the known-working alternative.
++            if _block_msg is None:
++                try:
++                    from agent.disclosure_router import DisclosureRouter
++                    _dr = DisclosureRouter()
++                    _dr_block = _dr.check_tool_call(function_name, function_args)
++                    if _dr_block:
++                        _block_msg = _dr_block
++                except Exception:
++                    pass  # Non-blocking
++
+             try:
+                 from hermes_cli.plugins import get_pre_tool_call_block_message
+                 _block_msg = _block_msg or get_pre_tool_call_block_message(
+@@ -11463,6 +11477,29 @@ class AIAgent:
          except Exception:
              pass
  

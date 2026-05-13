@@ -242,3 +242,49 @@ class DisclosureRouter:
         except Exception as e:
             logger.debug("DisclosureRouter: HTTP recall failed: %s", e)
             return []
+
+    # =========================================================================
+    # Tool-call Interceptor — block known failure patterns
+    # =========================================================================
+
+    # Maps (tool_name, arg_pattern) → (reason, alternative)
+    # arg_pattern is a regex matched against json.dumps of the tool arguments
+    BLOCKED_COMBINATIONS = [
+        {
+            "tool": "browser_navigate",
+            "url_pattern": r"linux\.do|linuxdo",
+            "reason": "linux.do uses Cloudflare protection. browser_navigate gets blocked.",
+            "alternative": "Use camoufox (Python) to open the page with anti-detection, or use curl for JSON API (.json endpoint).",
+        },
+    ]
+
+    def check_tool_call(self, tool_name: str, tool_args: dict) -> Optional[str]:
+        """
+        Check a tool call against known failure patterns.
+
+        Returns a blocking message if the tool call matches a known failure
+        pattern, or None if the call is safe to proceed.
+
+        Usage in run_agent.py (before tool execution):
+            block_msg = router.check_tool_call(tool_name, tool_args)
+            if block_msg:
+                # Return error to agent, don't execute the tool
+                return {"error": block_msg}
+        """
+        import json as _json
+
+        args_str = _json.dumps(tool_args or {}, ensure_ascii=False).lower()
+
+        for rule in self.BLOCKED_COMBINATIONS:
+            if tool_name != rule["tool"]:
+                continue
+            if re.search(rule.get("url_pattern", ""), args_str, re.IGNORECASE):
+                msg = (
+                    f"🚫 BLOCKED by Disclosure Router: {rule['reason']}\n"
+                    f"Alternative: {rule['alternative']}\n"
+                    f"This pattern has failed before. Use the alternative instead."
+                )
+                logger.info("DisclosureRouter: blocked %s (%s)", tool_name, rule["reason"][:50])
+                return msg
+
+        return None
