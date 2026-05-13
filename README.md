@@ -16,11 +16,13 @@ session_search 和 memory 按用户隔离，中文搜索(CJK trigram)也已修�
 **⚡ Agent 不再"跑偏"**
 每 8 次工具调用自动触发合规检查，把 Agent 拉回正轨。
 
-**🛡️ 安全防护 (18 个安全补丁)**
+**🛡️ 安全防护 (24 个安全补丁)**
 - SSRF 防护：阻止 IPv4-mapped IPv6 绕过和 IMDS 端点访问
 - 文件安全：阻止 agent 写入 config.yaml、auth.json 等敏感文件
 - Secret redaction：API key 不会意外泄露到日志和调试文件
 - 环境安全：.env/auth.json/state.db 恢复时强制 0600 权限
+- Tar 安全：拒绝非正规 tar 成员（tirith 安装器加固）
+- 媒体路径：验证媒体文件路径防止任意文件读取
 
 **🔧 Custom Provider 兼容性**
 修复自定义 provider 的多个 bug：is_custom_provider 参数、max_tokens 默认值、base_url 环境变量、credential pool key。
@@ -42,6 +44,13 @@ Telegram/CLI/Discord 记忆互通，`auto-setup` 一键检测 owner。
   - 你也可以自定义规则：哪些命令要拦、哪些字段必须存在、哪些值不能出现
 - 默认开启（安装即生效），可在 `~/.hermes/memory_policy.yaml` 中自定义或关闭
 
+**🔮 Disclosure Router + 记忆衰减引擎 (NEW)**
+"模型有记忆但不知道自己记得什么"——Disclosure Router 从架构层解决这个问题：
+- **主动注入**：用户消息匹配触发规则后，自动从 hindsight 搜索相关记忆注入 system prompt。不需要模型主动"想起来要搜"
+- **渐进式披露**：32,000+ 条记忆不平等对待。每条记忆有 decay score（基于类型权重×时间衰减×召回频率），session 开头只注入 top-8 最重要的，防止信息过载
+- **11 条触发规则**：linuxdo、beibei、记忆系统、hermes-agent 开发、cron 管理、Telegram 投递、vision 图片、git/github、纠正模式、格式偏好、用户身份
+- **记忆版本控制**：每次 `memory(action='replace')` 前自动快照旧内容到 JSONL，支持回滚
+
 ## 一行命令安装
 
 ```bash
@@ -50,7 +59,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 
 ## 兼容性说明
 
-**上游合并状态**（2026-05-09 测试）：
+**上游合并状态**（2026-05-14 测试）：
 
 上游在最近几周合并了大量社区贡献，包括：
 - Pre-flight thinking block
@@ -60,6 +69,8 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 - Custom provider slugs
 - MCP reconnect
 - Backup 0600 permissions
+- Secret redaction by default
+- Context compression summary redaction
 
 这些功能已内置在最新版 Hermes 中。install.sh 会自动检测并跳过已合并的补丁。
 
@@ -69,13 +80,15 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 - CJK 搜索 user_id 隔离
 - SkillDB FTS5 语义检索
 - Skill Evaluation Gate
-- 18 个安全补丁（文件/网络/环境防护）
+- 24 个安全补丁（文件/网络/环境/媒体防护）
 - Skill Pre-selection Auto-context Injection
 - Memory Metacognition Framework (PR #22516)
+- Disclosure Router + 记忆衰减引擎 + 渐进式披露
+- Cron 多用户投递隔离
 
-## 包含的补丁 (49 个)
+## 包含的补丁 (59 个)
 
-### 核心功能 (15 个)
+### 核心功能 (17 个)
 
 | # | 补丁文件 | 说明 | PR |
 |---|---------|------|-----|
@@ -95,6 +108,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 | 44 | `44_feat-skill-eval-gate-integration.patch` | Skill Eval Gate 集成到 run_agent | [#18316](https://github.com/NousResearch/hermes-agent/pull/18316) |
 | 45 | `45_overnight-evolution-bundle.patch` | Overnight evolution 综合补丁 | 夜间自动扫描合并 |
 | mc | `memory-metacognition-framework.patch` | Memory Metacognition Framework | [#22516](https://github.com/NousResearch/hermes-agent/pull/22516) |
+| dr | Disclosure Router + 渐进式披露 + 记忆衰减集成 | 主动记忆注入 + decay score 排序 | [#25266](https://github.com/NousResearch/hermes-agent/pull/25266) |
 
 ### Custom Provider 修复 (7 个)
 
@@ -108,15 +122,16 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 | pr19682 | `pr19682-fix-credential-pool-key-ambiguity.patch` | Credential pool key 歧义修复 | [#19682](https://github.com/NousResearch/hermes-agent/pull/19682) |
 | pr19685 | `pr19685-fix-cli-base_url-env-lookup.patch` | CLI base_url 环境变量查找 | [#19685](https://github.com/NousResearch/hermes-agent/pull/19685) |
 
-### Gateway / 平台修复 (3 个)
+### Gateway / 平台修复 (4 个)
 
 | # | 补丁文件 | 说明 | PR |
 |---|---------|------|-----|
 | 21 | `21_fix-correct-indentation-in-webhook-auth-validation.patch` | Webhook 认证缩进修复 | 本地修复 |
 | 31 | `31_fixagent-handle-string-context-compression-messages.patch` | 压缩消息字符串处理 | 本地修复 |
 | pr19683 | `pr19683-fix-gateway-model-api-key.patch` | Gateway model API key 保持 | [#19683](https://github.com/NousResearch/hermes-agent/pull/19683) |
+| safe-media | `fix-safe-media-path-class-prefix.patch` | 媒体路径安全 + class prefix 修复 | [#21869](https://github.com/NousResearch/hermes-agent/pull/21869) |
 
-### 安全补丁 (18 个)
+### 安全补丁 (24 个)
 
 | # | 补丁文件 | 说明 |
 |---|---------|------|
@@ -138,6 +153,18 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 | 32 | `32_testgateway-add-unit-tests-for-_is_authorized_media_path-sec.patch` | 媒体路径安全测试 |
 | 33 | `33_fixdiscord-scope-DISCORD_ALLOWED_ROLES-to-originating-guild-.patch` | Discord 角色限制到 guild |
 | 34 | `34_fixsecurity-validate-snapshot_id-and-file-paths-in-restore_q.patch` | snapshot_id 路径遍历防护 |
+| s1 | `new_0b044b741.patch` | 拒绝非正规 tar 成员 (tirith 安装器加固) |
+| s2 | `new_1181fa76e.patch` | 媒体文件路径验证防止任意文件读取 |
+| s3 | `new_4c96b54e7.patch` | 强制脱敏上下文压缩摘要 |
+| s4 | `new_5153eaf05.patch` | 默认启用 secret redaction |
+| s5 | `new_5e4fc4127.patch` | Agent 输出 secret 脱敏 |
+| s6 | `skill-eval-gate-v5.patch` | Skill Eval Gate v5 恢复 |
+
+### Goal / Codex 增强 (1 个)
+
+| # | 补丁文件 | 说明 | PR |
+|---|---------|------|-----|
+| goal | `feat-goal-codex-enhancements.patch` | Goal token budget + anti-laziness + Codex 增强 | [#21415](https://github.com/NousResearch/hermes-agent/pull/21415) |
 
 ### 其他 (6 个)
 
@@ -148,7 +175,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 | session-filter | `session-filter.patch` | Session 平台过滤器 |
 | community-prs | `community-prs-combined.patch` | 社区 PR 合集 (旧版) |
 | pr20758 | `pr20758-skill-pre-selection-auto-context.patch` | 技能预选自动上下文注入 |
-| pr19064 | 包含在 #6 | /model credential pool 保持 |
+| stats | `40_skill-stats-logging.patch` | Skill 注入统计日志 |
 
 ## 配置文件
 
