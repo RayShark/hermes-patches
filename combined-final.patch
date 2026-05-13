@@ -436,10 +436,62 @@ index 7fda09603..363d9f9a6 100644
                      platform_name,
                  )
 diff --git a/run_agent.py b/run_agent.py
-index a8d36cfb9..b258b7e5e 100644
+index a8d36cfb9..1c47efdbf 100644
 --- a/run_agent.py
 +++ b/run_agent.py
-@@ -10039,13 +10039,31 @@ class AIAgent:
+@@ -5272,6 +5272,51 @@ class AIAgent:
+ 
+ 
+ 
++    def _build_working_memory_anchor(self, messages: list, api_call_count: int) -> str:
++        """Build a compact working memory anchor for per-turn injection.
++        
++        Inspired by GenericAgent's 'update_working_checkpoint' — extracts key
++        facts from the conversation to maintain context in long sessions.
++        
++        Returns a short string (<500 chars) or empty if nothing useful.
++        """
++        if api_call_count < 2:
++            return ""  # Too early, nothing to anchor
++        
++        # Extract key facts from recent tool results
++        key_facts = []
++        for msg in messages[-6:]:  # Last 6 messages
++            if msg.get("role") != "tool":
++                continue
++            content = msg.get("content", "")
++            if not isinstance(content, str) or len(content) < 20:
++                continue
++            # Extract: file paths, URLs, error messages, key values
++            import re
++            # File paths
++            paths = re.findall(r'(?:/[\w./-]+\.\w+)', content)
++            for p in paths[:2]:
++                if p not in key_facts:
++                    key_facts.append(p)
++            # URLs
++            urls = re.findall(r'https?://\S+', content)
++            for u in urls[:1]:
++                if u not in key_facts:
++                    key_facts.append(u[:80])
++            # Error patterns
++            errors = re.findall(r'(?:Error|Exception|FAILED|error:)(.{0,50})', content)
++            for e in errors[:1]:
++                fact = f"err:{e.strip()[:40]}"
++                if fact not in key_facts:
++                    key_facts.append(fact)
++        
++        if not key_facts:
++            return ""
++        
++        # Compact format
++        facts_str = " | ".join(key_facts[:5])
++        return f"[Working Memory: {facts_str}]"
++
+     def _build_system_prompt(self, system_message: str = None) -> str:
+         """
+         Assemble the full system prompt from all layers.
+@@ -10039,13 +10084,31 @@ class AIAgent:
  
              block_result = None
              blocked_by_guardrail = False
@@ -476,7 +528,7 @@ index a8d36cfb9..b258b7e5e 100644
  
              if block_message is not None:
                  block_result = json.dumps({"error": block_message}, ensure_ascii=False)
-@@ -10428,6 +10446,20 @@ class AIAgent:
+@@ -10428,6 +10491,20 @@ class AIAgent:
              except Exception:
                  pass  # Non-blocking
  
@@ -497,7 +549,7 @@ index a8d36cfb9..b258b7e5e 100644
              try:
                  from hermes_cli.plugins import get_pre_tool_call_block_message
                  _block_msg = _block_msg or get_pre_tool_call_block_message(
-@@ -11430,6 +11462,50 @@ class AIAgent:
+@@ -11430,6 +11507,50 @@ class AIAgent:
              except Exception:
                  pass
  
@@ -548,7 +600,15 @@ index a8d36cfb9..b258b7e5e 100644
          # ── Task Routing Preflight: inject strategy hint before planning ──
          # Searches hindsight for known strategies (e.g., "linux.do needs Camoufox")
          # and injects the hint so the model plans with prior knowledge, not after failure.
-@@ -11613,6 +11689,8 @@ class AIAgent:
+@@ -11609,10 +11730,16 @@ class AIAgent:
+                 # never mutated, so nothing leaks into session persistence.
+                 if idx == current_turn_user_idx and msg.get("role") == "user":
+                     _injections = []
++                    # Working memory anchor (GenericAgent pattern)
++                    _wm = self._build_working_memory_anchor(messages, api_call_count)
++                    if _wm:
++                        _injections.append(_wm)
+                     if _ext_prefetch_cache:
                          _fenced = build_memory_context_block(_ext_prefetch_cache)
                          if _fenced:
                              _injections.append(_fenced)
