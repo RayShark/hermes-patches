@@ -1,0 +1,69 @@
+# Disclosure Rules — Proactive memory injection trigger conditions
+# Inspired by Nocturne Memory (https://github.com/Dataojitori/nocturne_memory)
+#
+# Each rule maps trigger patterns (keyword/phrase) to a hindsight query.
+# When a user message matches a pattern, the system automatically recalls
+# the associated memories and injects them into context — no agent action needed.
+#
+# This solves the "agent doesn't remember what it remembers" problem by
+# removing the dependency on the agent proactively thinking to search.
+
+rules:
+  # ── Critical operational rules ──
+  - name: linuxdo
+    patterns: ["linux.do", "linuxdo", "LinuxDo", "camoufox"]
+    query: "linuxdo cloudflare camoufox bypass cookie"
+    priority: 10
+
+  - name: user-identity
+    patterns: ["Steven", "左灏", "姚宗宏", "Nitrogen", "吃魈夜咯"]
+    query: "user identity Steven Nitrogen 左灏 姚宗宏 personal info"
+    priority: 9
+
+  - name: memory-system
+    patterns: ["记忆", "memory", "hindsight", "元认知", "metacognition", "不记得"]
+    query: "memory hindsight metacognition recall retain disclosure"
+    priority: 9
+
+  # ── Project rules ──
+  - name: hermes-agent-dev
+    patterns: ["hermes agent", "hermes-agent", "gateway", "补丁", "patch", "hermes update", "config.yaml"]
+    query: "hermes agent patch gateway update branch cron"
+    priority: 8
+
+  - name: beibei-project
+    patterns: ["beibei", "不背不背", "题库", "DSE", "刷题"]
+    query: "beibei DSE question bank deploy 题库"
+    priority: 8
+
+  - name: cron-management
+    patterns: ["cron", "定时任务", "cronjob", "scheduled", "作业提醒"]
+    query: "cron job scheduled task delivery user_id"
+    priority: 7
+
+  # ── Tool/tech rules ──
+  - name: telegram-delivery
+    patterns: ["发文件", "send file", "sendDocument", "发给"]
+    query: "telegram file delivery sendDocument curl bot API"
+    priority: 7
+
+  - name: vision-image
+    patterns: ["看图", "图片", "image", "screenshot", "截图", "vision", "PDF"]
+    query: "vision image analysis screenshot mimo extract PDF"
+    priority: 5
+
+  - name: git-github
+    patterns: ["git", "github", "PR", "commit", "push", "merge"]
+    query: "git github PR commit patch push hermes-patches"
+    priority: 5
+
+  # ── Behavioral rules ──
+  - name: correction-pattern
+    patterns: ["错了", "不对", "纠正", "修正", "wrong", "incorrect", "搞混"]
+    query: "user correction mistake lesson learned"
+    priority: 9
+
+  - name: format-preference
+    patterns: ["LaTeX", "$", "公式", "Unicode"]
+    query: "format LaTeX Telegram Unicode math Steven preference"
+    priority: 6
