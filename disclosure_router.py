@@ -182,6 +182,10 @@ class DisclosureRouter:
         Main entry point. Match message against disclosure rules,
         recall relevant memories, return formatted context block.
 
+        Implements progressive disclosure: only top-N memories by
+        decay score are injected, not all matches. This prevents
+        information overload (32k memories → top 5-10).
+
         Returns empty string if no rules match or no memories found.
         """
         matched = self.match(user_message)
@@ -204,13 +208,26 @@ class DisclosureRouter:
         if not all_memories:
             return ""
 
-        # Format the disclosure block
-        lines = ["## Disclosure Routing (proactively recalled)"]
-        lines.append("These memories were auto-injected based on trigger conditions in your message.\n")
+        # Progressive disclosure: load decay scores and rank memories
+        decay_scores = self._load_decay_scores()
+        ranked = []
         for name, memories in all_memories:
-            lines.append(f"### Trigger: {name}")
-            for m in memories[:3]:  # Cap per rule
-                lines.append(f"- {m}")
+            for m in memories:
+                # Score each memory by decay weight (higher = more important)
+                score = decay_scores.get(self._memory_hash(m), 0.5)
+                ranked.append((score, name, m))
+
+        # Sort by decay score descending, take top-N
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        top_n = ranked[:8]  # Inject at most 8 memories
+
+        # Format the disclosure block
+        lines = ["## Disclosure Routing (proactively recalled, ranked by importance)"]
+        lines.append("These memories were auto-injected based on trigger conditions.")
+        lines.append("Only top results shown (progressive disclosure).\n")
+        for score, name, m in top_n:
+            lines.append(f"### Trigger: {name} (importance: {score:.2f})")
+            lines.append(f"- {m[:500]}")
             lines.append("")
 
         return "\n".join(lines)
@@ -242,6 +259,34 @@ class DisclosureRouter:
         except Exception as e:
             logger.debug("DisclosureRouter: HTTP recall failed: %s", e)
             return []
+
+    def _load_decay_scores(self) -> Dict[str, float]:
+        """Load memory decay scores from the decay engine's state file.
+
+        Returns a dict mapping memory content hash → decay score [0, 1].
+        Higher score = more important (recently recalled, frequently used).
+        """
+        import json as _json
+        state_path = Path.home() / ".hermes" / "memory_decay_state.json"
+        if not state_path.exists():
+            return {}
+        try:
+            state = _json.loads(state_path.read_text())
+            scores = {}
+            for mem_id, data in state.get("memories", {}).items():
+                score = data.get("decay_score", 0.5)
+                content_hash = data.get("content_hash", "")
+                if content_hash:
+                    scores[content_hash] = score
+            return scores
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _memory_hash(content: str) -> str:
+        """Hash memory content for decay score lookup."""
+        import hashlib
+        return hashlib.md5(content.encode("utf-8")).hexdigest()[:12]
 
     # =========================================================================
     # Tool-call Interceptor — block known failure patterns
