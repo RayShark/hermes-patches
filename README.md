@@ -59,7 +59,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 
 ## 兼容性说明
 
-**上游合并状态**（2026-05-14 测试）：
+**上游合并状态**（2026-05-15 测试）：
 
 上游在最近几周合并了大量社区贡献，包括：
 - Pre-flight thinking block
@@ -85,8 +85,14 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 - Memory Metacognition Framework (PR #22516)
 - Disclosure Router + 记忆衰减引擎 + 渐进式披露
 - Cron 多用户投递隔离
+- **NEW**: P0 os.chmod 根目录防护 (Issue #25821)
+- **NEW**: Telegram MarkdownV2 finalize (PR #25724)
+- **NEW**: Cron disabled_toolsets 安全 (PR #25815)
+- **NEW**: delegate_task 状态修正 (PR #25825)
+- **NEW**: context_length=0 缓存防护 (PR #25812)
+- **NEW**: streaming 每 turn 重置 (PR #25771)
 
-## 包含的补丁 (59 个)
+## 包含的补丁 (60 个)
 
 ### 核心功能 (17 个)
 
@@ -166,7 +172,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 |---|---------|------|-----|
 | goal | `feat-goal-codex-enhancements.patch` | Goal token budget + anti-laziness + Codex 增强 | [#21415](https://github.com/NousResearch/hermes-agent/pull/21415) |
 
-### 其他 (6 个)
+### 其他 (7 个)
 
 | # | 补丁文件 | 说明 |
 |---|---------|------|
@@ -176,6 +182,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 | community-prs | `community-prs-combined.patch` | 社区 PR 合集 (旧版) |
 | pr20758 | `pr20758-skill-pre-selection-auto-context.patch` | 技能预选自动上下文注入 |
 | stats | `40_skill-stats-logging.patch` | Skill 注入统计日志 |
+| upstream-v1 | `upstream-valuable-patches-v1.patch` | **NEW**: 6 个上游高价值补丁 (P0/P1/P2) |
 
 ## 配置文件
 
