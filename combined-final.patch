@@ -3018,7 +3018,7 @@ index 000000000..7f53d87cd
 +    ctx.register_command("skim",handler=_handle_slash,description="Skim v0.4")
 +    logger.info(f"skim-compressor v0.4 loaded (mode={_MODE})")
 diff --git a/run_agent.py b/run_agent.py
-index d995c607d..0cb72f6e9 100644
+index d995c607d..cbdaf8c80 100644
 --- a/run_agent.py
 +++ b/run_agent.py
 @@ -161,6 +161,13 @@ from agent.context_compressor import ContextCompressor
@@ -3279,7 +3279,7 @@ index d995c607d..0cb72f6e9 100644
          if self._cached_system_prompt is None:
              stored_prompt = None
              if conversation_history and self._session_db:
-@@ -12062,6 +12227,18 @@ class AIAgent:
+@@ -12062,6 +12227,25 @@ class AIAgent:
  
          active_system_prompt = self._cached_system_prompt
  
@@ -3289,7 +3289,14 @@ index d995c607d..0cb72f6e9 100644
 +
 +        # Inject strategy preflight hint if detected
 +        if _strategy_hint:
-+            active_system_prompt = (active_system_prompt or "") + "\n\n" + _strategy_hint
++            _hint_text = (
++                f"[Strategy Hint: {_strategy_hint.task_type}]\n"
++                f"Recommended: {_strategy_hint.preferred_method} "
++                f"(confidence: {_strategy_hint.confidence})\n"
++                f"Avoid: {', '.join(_strategy_hint.avoid_methods)}\n"
++                f"Reason: {_strategy_hint.reason}"
++            )
++            active_system_prompt = (active_system_prompt or "") + "\n\n" + _hint_text
 +
 +        # Inject conversation recall results if any entities matched
 +        if _conv_recall_cache:
@@ -3298,7 +3305,7 @@ index d995c607d..0cb72f6e9 100644
          # ── Preflight context compression ──
          # Before entering the main loop, check if the loaded conversation
          # history already exceeds the model's context threshold.  This handles
-@@ -12220,7 +12397,26 @@ class AIAgent:
+@@ -12220,7 +12404,26 @@ class AIAgent:
          if self._memory_manager:
              try:
                  _query = original_user_message if isinstance(original_user_message, str) else ""
@@ -3326,7 +3333,7 @@ index d995c607d..0cb72f6e9 100644
              except Exception:
                  pass
  
-@@ -12397,6 +12593,8 @@ class AIAgent:
+@@ -12397,6 +12600,8 @@ class AIAgent:
                          _fenced = build_memory_context_block(_ext_prefetch_cache)
                          if _fenced:
                              _injections.append(_fenced)

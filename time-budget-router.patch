@@ -1,0 +1,149 @@
+diff --git a/run_agent.py b/run_agent.py
+index 1559252b7..ec1c84301 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -1693,6 +1693,8 @@ class AIAgent:
+         self._turns_since_memory = 0
+         self._iters_since_skill = 0
+         self._skill_eval_done = False   # Skill Evaluation Gate: set True after first skill_view
++        self._deep_work_loaded = False  # P0: Time-budget router: set True when deep-work is loaded
++        self._time_budget_detected = False  # P0: Time-budget router: set True when user gives high time budget
+         if not skip_memory:
+             try:
+                 mem_config = _agent_cfg.get("memory", {})
+@@ -4881,6 +4883,50 @@ class AIAgent:
+ 
+ 
+ 
++    # ── Time-Budget Router (P0: force deep-work for high time-budget tasks) ──
++    _TIME_BUDGET_PATTERNS_ZH = [
++        "给你一天时间", "给你一天", "给你几天", "给你两天",
++        "给你几个小时", "给你一晚上", "给你半天",
++        "给你两小时", "给你三小时", "给你四小时",
++        "给你N小时", "给你时间",
++        "慢慢做", "不着急", "不急", "慢慢来",
++        "深度调研", "深度研究", "深度分析", "深度审计",
++        "全面审计", "全面测试", "全面检查", "全面分析",
++        "彻底检查", "彻底测试", "彻底修复", "彻底调研",
++        "好好研究", "好好测试", "好好检查", "好好调研",
++        "好好深度", "好好优选",
++        "打包成文件", "做成报告", "写个报告",
++        "用一整天", "花一天", "花时间",
++        "全面具体", "认真测", "仔细测",
++    ]
++    _TIME_BUDGET_PATTERNS_EN = [
++        "use the whole night", "take your time", "you have N hours",
++        "use all the time", "spend the day", "no rush",
++        "comprehensive testing", "comprehensive audit",
++        "deep research", "deep dive", "thorough analysis",
++        "thorough testing", "thorough review",
++        "full audit", "full test", "full coverage",
++        "make it perfect", "do it right",
++        "take as long as you need",
++    ]
++
++    def _detect_time_budget(self, user_message: str) -> bool:
++        """Detect if user message signals a high time-budget / quality task.
++
++        When True, deep-work should be loaded as a mandatory skill so the
++        agent enters quality-enforcement mode instead of generic task management.
++        """
++        if not user_message:
++            return False
++        msg_lower = user_message.lower()
++        for p in self._TIME_BUDGET_PATTERNS_ZH:
++            if p in user_message:
++                return True
++        for p in self._TIME_BUDGET_PATTERNS_EN:
++            if p in msg_lower:
++                return True
++        return False
++
+     def _build_system_prompt(self, system_message: str = None) -> str:
+         """
+         Assemble the full system prompt from all layers.
+@@ -5056,8 +5102,12 @@ class AIAgent:
+ 
+         # Inject mandatory skills prompt if configured.
+         # These skills MUST be loaded before responding to any factual question.
+-        if self._mandatory_skills and has_skills_tools:
+-            mandatory_skills_list = ", ".join(self._mandatory_skills)
++        # P0: Also include deep-work when time-budget is detected.
++        _effective_mandatory = list(self._mandatory_skills)
++        if getattr(self, '_time_budget_detected', False) and 'deep-work' not in _effective_mandatory:
++            _effective_mandatory.append('deep-work')
++        if _effective_mandatory and has_skills_tools:
++            mandatory_skills_list = ", ".join(_effective_mandatory)
+             mandatory_skills_prompt = (
+                 f"## Mandatory Skills (must load before factual responses)\n"
+                 f"The following skills are MANDATORY and must be loaded via skill_view() "
+@@ -5076,6 +5126,21 @@ class AIAgent:
+             )
+             prompt_parts.append(mandatory_skills_prompt)
+ 
++        # P0: Time-budget router — when user gives high time budget, enforce
++        # deep-work as PRIMARY skill. long-task-execution is only secondary.
++        if getattr(self, '_time_budget_detected', False) and has_skills_tools:
++            time_budget_prompt = (
++                "## Time-Budget Quality Enforcement (ACTIVE)\n"
++                "The user has expressed a HIGH TIME BUDGET for this task.\n"
++                "You MUST load `deep-work` via skill_view() as your PRIMARY operational skill.\n"
++                "deep-work defines quality gates, time management, and verification layers.\n"
++                "If you also need `long-task-execution` for session management, it is SECONDARY only.\n"
++                "deep-work > long-task-execution in priority. This is a hard rule, not a suggestion.\n"
++                "DO NOT skip quality gates. DO NOT finish early by skipping steps.\n"
++                "The time budget is sacred — use it for research, verification, and adversarial review.\n"
++            )
++            prompt_parts.append(time_budget_prompt)
++
+         if not self.skip_context_files:
+             # Use TERMINAL_CWD for context file discovery when set (gateway
+             # mode).  The gateway process runs from the hermes-agent install
+@@ -9622,6 +9687,14 @@ class AIAgent:
+                 _sid = self.session_id or effective_task_id or ""
+                 if is_skill_view_call(function_name):
+                     self._skill_eval_done = True
++                    # P0: Track if deep-work was loaded (for time-budget enforcement)
++                    if getattr(self, '_time_budget_detected', False):
++                        try:
++                            _viewed_name = function_args.get('name', '')
++                            if 'deep-work' in str(_viewed_name):
++                                self._deep_work_loaded = True
++                        except Exception:
++                            pass
+                     mark_evaluated(_sid)  # sync with model_tools.py
+                 elif not self._skill_eval_done and should_block_tool(function_name, _sid):
+                     block_message = (
+@@ -9633,6 +9706,20 @@ class AIAgent:
+             except ImportError:
+                 pass
+ 
++            # P0: Time-budget enforcement — block tool calls until deep-work is loaded.
++            # This is the code-level hard gate that prevents the model from skipping
++            # deep-work when the user has expressed a high time budget.
++            if (getattr(self, '_time_budget_detected', False)
++                    and not getattr(self, '_deep_work_loaded', False)
++                    and not getattr(self, '_skill_eval_done', False)
++                    and function_name != 'skill_view'):
++                block_message = (
++                    "DEEP-WORK REQUIRED: The user has given a high time budget for this task. "
++                    "You MUST call skill_view(name='deep-work') BEFORE any other tool calls. "
++                    "This is a hard requirement, not a suggestion. "
++                    "After loading deep-work, follow its quality gates and time management rules."
++                )
++
+             try:
+                 from hermes_cli.plugins import get_pre_tool_call_block_message
+                 block_message = get_pre_tool_call_block_message(
+@@ -10766,6 +10853,11 @@ class AIAgent:
+         # from disk that the model already knows about (it wrote them!),
+         # producing a different system prompt and breaking the Anthropic
+         # prefix cache.
++
++        # P0: Time-budget router — detect before building system prompt.
++        # Sets flag so _build_system_prompt includes deep-work as mandatory.
++        self._time_budget_detected = self._detect_time_budget(user_message)
++
+         if self._cached_system_prompt is None:
+             stored_prompt = None
+             if conversation_history and self._session_db:
