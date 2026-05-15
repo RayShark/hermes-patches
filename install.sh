@@ -17,7 +17,7 @@ TEMP_DIR=$(mktemp -d)
 PATCHES_DIR=""
 
 echo "╔══════════════════════════════════════════╗"
-echo "║   Hermes Agent 社区补丁合集 v2.0         ║"
+echo "║     Hermes Agent 社区补丁合集            ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
