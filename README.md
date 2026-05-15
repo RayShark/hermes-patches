@@ -1,17 +1,23 @@
 # Hermes Agent 社区补丁合集
 
-> 一键安装，补全上游尚未合并的修复和增强。已合并的补丁会自动跳过。
+> 一键安装，补全上游尚未合并的修复和增强。已合并的补丁自动跳过。
+
+## 一行命令安装
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/install.sh)
+```
 
 ## 装有什么用？
 
 **💰 省钱：每次对话省 99.2% token**
-原版 Hermes 每次对话会把 160 个技能描述全部塞进 system prompt，白白浪费约 12000 token。打完补丁后只注入你真正需要的 1-3 个技能，token 消耗从 ~12000 降到 ~200。
+原版 Hermes 每次对话把 160 个技能描述全塞进 system prompt（~12000 token）。打补丁后只注入 1-3 个相关技能，降到 ~200 token。
 
 **🔒 隐私：多用户不再互相泄露**
-session_search 和 memory 按用户隔离，中文搜索(CJK trigram)也已修复。
+session_search 和 memory 按用户隔离，中文搜索 (CJK trigram) 已修复。
 
 **🧠 长对话不失忆**
-上下文压缩不再削弱 memory 权威性，你设定的规则在整个会话期间持续生效。
+上下文压缩不再削弱 memory 权威性，你的规则在整个会话期间持续生效。
 
 **⚡ Agent 不再"跑偏"**
 每 8 次工具调用自动触发合规检查，把 Agent 拉回正轨。
@@ -19,9 +25,8 @@ session_search 和 memory 按用户隔离，中文搜索(CJK trigram)也已修�
 **🛡️ 安全防护 (24 个安全补丁)**
 - SSRF 防护：阻止 IPv4-mapped IPv6 绕过和 IMDS 端点访问
 - 文件安全：阻止 agent 写入 config.yaml、auth.json 等敏感文件
-- Secret redaction：API key 不会意外泄露到日志和调试文件
+- Secret redaction：API key 不会泄露到日志和调试文件
 - 环境安全：.env/auth.json/state.db 恢复时强制 0600 权限
-- Tar 安全：拒绝非正规 tar 成员（tirith 安装器加固）
 - 媒体路径：验证媒体文件路径防止任意文件读取
 
 **🔧 Custom Provider 兼容性**
@@ -30,49 +35,53 @@ session_search 和 memory 按用户隔离，中文搜索(CJK trigram)也已修�
 **🔗 跨渠道记忆统一**
 Telegram/CLI/Discord 记忆互通，`auto-setup` 一键检测 owner。
 
-**🧠 Agent 自动获取上下文**
-每轮自动搜索 hindsight + session 历史，system message 注入。
+**🧠 记忆元认知框架**
+- **不再失忆**：session 启动时自动注入记忆库摘要
+- **搜得更准**：自动搜索相关记忆，不只是关键词匹配
+- **拦得住**：工具调用前强制检查参数，危险操作直接 block
+- 默认开启，可在 `~/.hermes/memory_policy.yaml` 中自定义或关闭
 
-**🧠 记忆元认知框架 (NEW)**
-你有没有遇到过这种情况：明明上次踩过的坑，教训千叮万嘱记下来了，模型也口口声声说"再也不会犯了，已经修复"——结果下次换个说法问，同样的错再犯一遍？根本原因是它有记忆，但不知道自己记得什么，也不知道什么时候该查，更不会在执行前检查自己有没有违反。光靠"记住教训"没用，因为模型会忘、会绕过、会在新上下文里忽略。这次补丁从工程层强制约束：
-- **不再失忆**：session 启动时自动注入记忆库摘要（"我大概记得什么"），不用等用户问才想起来
-- **搜得更准**：你说"改一下配置"，它不只搜"配置"，还会自动搜 config.yaml、provider、gateway 等相关记忆。你说"做个 patch"，它会搜 branch、PR、四端同步。以前经常搜不到、白问的情况大幅减少
-- **拦得住**：不是靠模型"自觉"，是系统在工具调用前强制检查参数。比如：
-  - `rm -rf` / `git push --force` / `drop table` → 直接 block，不给执行
-  - 发消息时带了文件标签但方法不对 → block，要求用正确方式
-  - 缺少必要参数（比如收件人没填）→ block，不发空包
-  - 你也可以自定义规则：哪些命令要拦、哪些字段必须存在、哪些值不能出现
-- 默认开启（安装即生效），可在 `~/.hermes/memory_policy.yaml` 中自定义或关闭
+**🔮 Disclosure Router + 记忆衰减引擎**
+- **主动注入**：用户消息匹配触发规则后，自动从 hindsight 搜索相关记忆注入 system prompt
+- **渐进式披露**：每条记忆有 decay score，session 开头只注入 top-8 最重要的
+- **11 条触发规则**：linuxdo、beibei、记忆系统、hermes-agent 开发、cron 管理等
 
-**🔮 Disclosure Router + 记忆衰减引擎 (NEW)**
-"模型有记忆但不知道自己记得什么"——Disclosure Router 从架构层解决这个问题：
-- **主动注入**：用户消息匹配触发规则后，自动从 hindsight 搜索相关记忆注入 system prompt。不需要模型主动"想起来要搜"
-- **渐进式披露**：32,000+ 条记忆不平等对待。每条记忆有 decay score（基于类型权重×时间衰减×召回频率），session 开头只注入 top-8 最重要的，防止信息过载
-- **11 条触发规则**：linuxdo、beibei、记忆系统、hermes-agent 开发、cron 管理、Telegram 投递、vision 图片、git/github、纠正模式、格式偏好、用户身份
-- **记忆版本控制**：每次 `memory(action='replace')` 前自动快照旧内容到 JSONL，支持回滚
+## 包含的补丁
 
-## 一行命令安装
+本仓库使用 `combined-final.patch` 作为唯一安装源，包含 79 个文件的修改：
 
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/install.sh)
-```
+### 核心功能 (17 个)
+- 混合技能选择器 3 层筛选
+- 技能执行纪律框架 + 合规检查插件
+- 记忆元认知框架 (5 层预检策略)
+- Disclosure Router + 记忆衰减引擎
+- Session Memory Compaction
+- User Mapper (跨渠道记忆统一)
 
-## 兼容性说明
+### 安全修复 (24 个)
+- SSRF 防护 (IPv4-mapped IPv6, IMDS 端点)
+- 文件安全 (config.yaml, auth.json 写入保护)
+- Secret redaction (API key 日志泄露)
+- 环境安全 (.env/auth.json/state.db 0600 权限)
+- 媒体路径验证
+- Tar 安全 (tirith 安装器加固)
+- WebSocket localhost 检查
+- ACP 子进程凭据清理
 
-**上游合并状态**（2026-05-15 测试）：
+### Custom Provider 修复 (5 个)
+- is_custom_provider 参数提取
+- max_tokens 默认值
+- base_url 环境变量 (.env 文件读取)
+- credential pool key 模糊匹配
+- provider slug 验证
 
-上游在最近几周合并了大量社区贡献，包括：
-- Pre-flight thinking block
-- Auto-context retrieval (hindsight + session_search)
-- 14 community PRs (KV cache, secret redaction, emergency compression 等)
-- Multi-user session/memory isolation
-- Custom provider slugs
-- MCP reconnect
-- Backup 0600 permissions
-- Secret redaction by default
-- Context compression summary redaction
+### 测试 (25 个新测试文件)
 
-这些功能已内置在最新版 Hermes 中。install.sh 会自动检测并跳过已合并的补丁。
+## 兼容性
+
+**最后测试**: 2026-05-15 vs upstream/main (commit db84a78e6)
+
+`combined-final.patch` 对最新 upstream 零冲突。上游已合并的变更在 patch apply 时自动跳过。
 
 **仍需本补丁集的修复**：
 - IPv4-mapped IPv6 SSRF 防护
@@ -81,139 +90,45 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 - SkillDB FTS5 语义检索
 - Skill Evaluation Gate
 - 24 个安全补丁（文件/网络/环境/媒体防护）
-- Skill Pre-selection Auto-context Injection
-- Memory Metacognition Framework (PR #22516)
-- Disclosure Router + 记忆衰减引擎 + 渐进式披露
+- Memory Metacognition Framework
+- Disclosure Router + 记忆衰减引擎
 - Cron 多用户投递隔离
-- **NEW**: P0 os.chmod 根目录防护 (Issue #25821)
-- **NEW**: Telegram MarkdownV2 finalize (PR #25724)
-- **NEW**: Cron disabled_toolsets 安全 (PR #25815)
-- **NEW**: delegate_task 状态修正 (PR #25825)
-- **NEW**: context_length=0 缓存防护 (PR #25812)
-- **NEW**: streaming 每 turn 重置 (PR #25771)
 
-## 包含的补丁 (60 个)
+## 安装内容
 
-### 核心功能 (17 个)
+| 文件 | 说明 |
+|------|------|
+| `combined-final.patch` | 核心补丁（79 文件，~34K 行） |
+| `agent/disclosure_router.py` | 记忆主动注入路由（335 行） |
+| `memory_policy.default.yaml` | 记忆元认知策略配置 |
+| `install.sh` | 一键安装脚本 |
+| `scripts/apply_hermes_patches.sh` | hermes update 后重新应用 |
 
-| # | 补丁文件 | 说明 | PR |
-|---|---------|------|-----|
-| 1 | `1_fix-preserve-memory-authority-across-context-compaction.patch` | 上下文压缩保留 memory 权威性 | [#17989](https://github.com/NousResearch/hermes-agent/pull/17989) |
-| 2 | `2_feat-Add-hybrid-skill-selector-layer-A.patch` | 混合技能选择器 3 层筛选 | [#18316](https://github.com/NousResearch/hermes-agent/pull/18316) |
-| 3 | `3_Apply-14-community-PRs--fix-session_search-ordering.patch` | 合并 14 个社区 PR | 社区 PR 合集 |
-| 4 | `4_feat-Add-skill-enforcement-framework.patch` | 技能执行纪律框架 | [#18849](https://github.com/NousResearch/hermes-agent/pull/18849) |
-| 5 | `5_featplugins-add-skill-enforcer-plugin-for-periodic-complianc.patch` | 合规检查插件 (每 8 次工具调用) | [#18849](https://github.com/NousResearch/hermes-agent/pull/18849) |
-| 6 | `6_fix-preserve-credential-pool-through-_model-session-override.patch` | Credential pool /model 保持 | [#19064](https://github.com/NousResearch/hermes-agent/pull/19064) |
-| 7 | `7_feat-pre-flight-thinking-block--fact-verification-gate-v2.patch` | Pre-flight thinking block | 本地实现 |
-| 8 | `8_feat-auto-context-retrieval-replacing-regex-fact-verificatio.patch` | Agent 自动上下文检索 | 本地实现 |
-| 9 | `9_feat-add-auto-setup-for-owner-detection--cross-channel-memor.patch` | 跨渠道记忆统一 + auto-setup | [#19163](https://github.com/NousResearch/hermes-agent/pull/19163) |
-| 40 | `40_fix-enforce-user_id-filtering-in-session_search.patch` | 多用户 session_search 隔离 | [#17989](https://github.com/NousResearch/hermes-agent/pull/17989) |
-| 41 | `41_feat-implement-skill-db-FTS5.patch` | SQLite FTS5 语义技能检索 | [#18316](https://github.com/NousResearch/hermes-agent/pull/18316) |
-| 42 | `42_feat-skill-eval-gate-complete.patch` | Skill Evaluation Gate 完整版 | [#18316](https://github.com/NousResearch/hermes-agent/pull/18316) |
-| 43 | `43_fix-cjk-user_id-and-switch_model-credential_pool.patch` | CJK 搜索隔离 + credential pool | 本地修复 |
-| 44 | `44_feat-skill-eval-gate-integration.patch` | Skill Eval Gate 集成到 run_agent | [#18316](https://github.com/NousResearch/hermes-agent/pull/18316) |
-| 45 | `45_overnight-evolution-bundle.patch` | Overnight evolution 综合补丁 | 夜间自动扫描合并 |
-| mc | `memory-metacognition-framework.patch` | Memory Metacognition Framework | [#22516](https://github.com/NousResearch/hermes-agent/pull/22516) |
-| dr | Disclosure Router + 渐进式披露 + 记忆衰减集成 | 主动记忆注入 + decay score 排序 | [#25266](https://github.com/NousResearch/hermes-agent/pull/25266) |
-
-### Custom Provider 修复 (7 个)
-
-| # | 补丁文件 | 说明 | PR |
-|---|---------|------|-----|
-| 10 | `10_fixauth-shorten-credential-401-cooldown.patch` | 缩短 401 认证失败冷却 | 本地修复 |
-| 12 | `12_fixauth-stop-treating-CLAUDE_CODE_OAUTH_TOKEN-as-Anthropic-A.patch` | 不再误识别 OAuth token | 本地修复 |
-| 14 | `14_fixcli-allow-custom-provider-slugs-in-model-validation.patch` | 允许 custom provider slugs | 本地修复 |
-| 35 | `35_fix-extract-is_custom_provider-from-params.patch` | is_custom_provider 参数修复 | [#19686](https://github.com/NousResearch/hermes-agent/pull/19686) |
-| 36 | `36_fix-transport-default-max_tokens-for-custom-providers.patch` | max_tokens 默认值修复 | [#19686](https://github.com/NousResearch/hermes-agent/pull/19686) |
-| pr19682 | `pr19682-fix-credential-pool-key-ambiguity.patch` | Credential pool key 歧义修复 | [#19682](https://github.com/NousResearch/hermes-agent/pull/19682) |
-| pr19685 | `pr19685-fix-cli-base_url-env-lookup.patch` | CLI base_url 环境变量查找 | [#19685](https://github.com/NousResearch/hermes-agent/pull/19685) |
-
-### Gateway / 平台修复 (4 个)
-
-| # | 补丁文件 | 说明 | PR |
-|---|---------|------|-----|
-| 21 | `21_fix-correct-indentation-in-webhook-auth-validation.patch` | Webhook 认证缩进修复 | 本地修复 |
-| 31 | `31_fixagent-handle-string-context-compression-messages.patch` | 压缩消息字符串处理 | 本地修复 |
-| pr19683 | `pr19683-fix-gateway-model-api-key.patch` | Gateway model API key 保持 | [#19683](https://github.com/NousResearch/hermes-agent/pull/19683) |
-| safe-media | `fix-safe-media-path-class-prefix.patch` | 媒体路径安全 + class prefix 修复 | [#21869](https://github.com/NousResearch/hermes-agent/pull/21869) |
-
-### 安全补丁 (24 个)
-
-| # | 补丁文件 | 说明 |
-|---|---------|------|
-| 15 | `15_fix-validate-provider-credentials-before-auto-detection-1928.patch` | Provider 凭证验证 |
-| 16 | `16_fixfile-safety-block-authjson-read-via-TERMINAL_CWD-relative.patch` | auth.json 相对路径读取阻止 |
-| 17 | `17_fixsecurity-prevent-SSRF-bypass-for-IMDS-endpoints-in-browse.patch` | SSRF IMDS 防护 |
-| 18 | `18_securityfile-safety-also-write-deny-root_env-when-running-un.patch` | .env 写入安全 |
-| 19 | `19_fixsecurity-protect-Hermes-control-plane-files-from-prompt-i.patch` | 控制面板 prompt injection 防护 |
-| 20 | `20_fixsecurity-add-code-level-guard-against-modifying-bundled_h.patch` | bundled skills 保护 |
-| 22 | `22_fixurl_safety-block-IPv4-mapped-IPv6-addresses-to-prevent-SS.patch` | IPv4-mapped IPv6 SSRF 阻止 |
-| 23 | `23_fixfile_tools-block-agent-writes-to-_hermes_configyaml-to-pr.patch` | config.yaml 写入阻止 |
-| 24 | `24_test-use-realistic-fake-keys-to-exercise-mask-format-verific.patch` | Key mask 格式测试 |
-| 25 | `25_fixagent-redact-secrets-in-request_dump_json-files.patch` | request_dump 脱敏 |
-| 26 | `26_fixagent-redact-lowercase_dotted-config-keys-in-terminal-out.patch` | 低级配置键终端脱敏 |
-| 27 | `27_fixsecurity-restore-env_authjson_statedb-with-0600-perms.patch` | 恢复文件 0600 权限 |
-| 28 | `28_hermes-agent-Scrub-provider-creds-from-ACP-child-env.patch` | ACP 子进程凭证清理 |
-| 29 | `29_fixsecurity-fail-closed-WebSocket-localhost-check-when-clien.patch` | WebSocket 空主机 fail-closed |
-| 30 | `30_fixapproval-use-per-process-UUID-as-default-session-key-to-p.patch` | UUID 会话隔离 |
-| 32 | `32_testgateway-add-unit-tests-for-_is_authorized_media_path-sec.patch` | 媒体路径安全测试 |
-| 33 | `33_fixdiscord-scope-DISCORD_ALLOWED_ROLES-to-originating-guild-.patch` | Discord 角色限制到 guild |
-| 34 | `34_fixsecurity-validate-snapshot_id-and-file-paths-in-restore_q.patch` | snapshot_id 路径遍历防护 |
-| s1 | `new_0b044b741.patch` | 拒绝非正规 tar 成员 (tirith 安装器加固) |
-| s2 | `new_1181fa76e.patch` | 媒体文件路径验证防止任意文件读取 |
-| s3 | `new_4c96b54e7.patch` | 强制脱敏上下文压缩摘要 |
-| s4 | `new_5153eaf05.patch` | 默认启用 secret redaction |
-| s5 | `new_5e4fc4127.patch` | Agent 输出 secret 脱敏 |
-| s6 | `skill-eval-gate-v5.patch` | Skill Eval Gate v5 恢复 |
-
-### Goal / Codex 增强 (1 个)
-
-| # | 补丁文件 | 说明 | PR |
-|---|---------|------|-----|
-| goal | `feat-goal-codex-enhancements.patch` | Goal token budget + anti-laziness + Codex 增强 | [#21415](https://github.com/NousResearch/hermes-agent/pull/21415) |
-
-### 其他 (7 个)
-
-| # | 补丁文件 | 说明 |
-|---|---------|------|
-| 11 | `11_fixfile-strip-leaked-terminal-fences-from-reads.patch` | 终端 fence 泄露清理 |
-| 13 | `13_fixmcp-reconnect-on-terminated-sessions.patch` | MCP 会话重连 |
-| session-filter | `session-filter.patch` | Session 平台过滤器 |
-| community-prs | `community-prs-combined.patch` | 社区 PR 合集 (旧版) |
-| pr20758 | `pr20758-skill-pre-selection-auto-context.patch` | 技能预选自动上下文注入 |
-| stats | `40_skill-stats-logging.patch` | Skill 注入统计日志 |
-| upstream-v1 | `upstream-valuable-patches-v1.patch` | **NEW**: 6 个上游高价值补丁 (P0/P1/P2) |
-
-## 配置文件
-
-- `examples/memory_policy.example.yaml` — Memory Metacognition 脱敏配置模板
-  复制到 `~/.hermes/memory_policy.yaml` 并自定义
-
-## 使用说明
-
-- **幂等安全**：已应用的补丁自动跳过，可多次运行
-- **hermes update 后**：更新会覆盖补丁，重新运行 `install.sh` 即可
-- **回滚**：`cd ~/.hermes/hermes-agent && git reset --hard ORIG_HEAD`
-- **选择性安装**：删除 `patches/` 目录下不需要的 `.patch` 文件
-
-## 与 hermes update 配合
-
-在 `~/.bashrc` 中添加：
+## 手动安装
 
 ```bash
-hermes() {
-    if [ "$1" = "update" ]; then
-        command hermes update "${@:2}"
-        bash ~/hermes-patches/install.sh
-    else
-        command hermes "$@"
-    fi
-}
+cd ~/.hermes/hermes-agent
+
+# 应用补丁
+git apply combined-final.patch
+
+# 复制独立文件
+cp agent/disclosure_router.py ~/.hermes/hermes-agent/agent/
+cp memory_policy.default.yaml ~/.hermes/memory_policy.yaml
+
+# 重启
+systemctl --user restart hermes-gateway
 ```
 
-## 许可
+## 回滚
 
-补丁来自 Hermes Agent 开源项目 (NousResearch/hermes-agent)，遵循原项目许可。
-- - - -
-友链：**[Linux Do](https://linux.do/)**
-本项目亦在Linux Do社区中发布相关帖子。感谢佬友雪中送炭的Token哈哈~
+```bash
+cd ~/.hermes/hermes-agent
+git reset --hard HEAD~1  # 回退补丁提交
+# 或 git stash 保存当前状态
+```
+
+## 友链
+
+- [Hermes Agent 官方仓库](https://github.com/NousResearch/hermes-agent)
+- [Hermes Agent 文档](https://hermes-agent.nousresearch.com/docs)
