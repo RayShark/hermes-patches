@@ -43,7 +43,7 @@ echo "✅ Hermes 路径: $HERMES_DIR"
 
 # ── Prepare patches ──
 if [ -f "$(dirname "$0")/combined-final.patch" ]; then
-    PATCHES_DIR="$(dirname "$0")"
+    PATCHES_DIR="$(cd "$(dirname "$0")" && pwd)"
     echo "📂 使用本地补丁"
 else
     echo "📥 下载补丁..."
