@@ -3,6 +3,45 @@
 # 用法: bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/install.sh)
 #
 # 安装内容:
+
+# ── Memory Graph 模块 ──
+echo ""
+echo "📦 安装 Memory Graph 模块..."
+MG_FILES=(
+    "agent/memory_graph/__init__.py"
+    "agent/memory_graph/auth.py"
+    "agent/memory_graph/db/__init__.py"
+    "agent/memory_graph/db/models.py"
+    "agent/memory_graph/db/init.sql"
+    "agent/memory_graph/migration.py"
+    "agent/memory_graph/server.py"
+    "agent/memory_graph/services/__init__.py"
+    "agent/memory_graph/services/graph.py"
+    "agent/memory_graph/services/search.py"
+    "agent/memory_graph/services/glossary.py"
+    "agent/memory_graph/services/disclosure.py"
+    "agent/memory_graph/services/namespace.py"
+    "agent/memory_graph/services/snapshot.py"
+    "agent/memory_graph/services/system_views.py"
+    "agent/memory_graph/services/text_patch.py"
+    "agent/memory_graph/services/search_terms.py"
+    "agent/memory_graph/web/__init__.py"
+    "agent/memory_graph/web/dashboard.py"
+    "tools/memory_graph_tool.py"
+)
+for f in "${MG_FILES[@]}"; do
+    src="$PATCHES_DIR/$f"
+    dst="$HERMES_DIR/$f"
+    if [ -f "$src" ]; then
+        mkdir -p "$(dirname "$dst")"
+        if [ ! -f "$dst" ] || ! diff -q "$src" "$dst" > /dev/null 2>&1; then
+            cp "$src" "$dst"
+            echo "✅ $f"
+        else
+            echo "⏭️  $f 已是最新"
+        fi
+    fi
+done
 #   1. combined-final.patch — 79个文件的核心功能+安全补丁
 #   2. agent/disclosure_router.py — 记忆主动注入路由
 #   3. memory_policy.default.yaml — 记忆元认知策略配置
