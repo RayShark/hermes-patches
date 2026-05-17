@@ -83,6 +83,23 @@ else
     exit 1
 fi
 
+# ── Apply individual patches (new, not yet in combined-final.patch) ──
+if [ -d "$PATCHES_DIR/patches" ]; then
+    for pf in "$PATCHES_DIR/patches"/*.patch; do
+        [ -f "$pf" ] || continue
+        PNAME=$(basename "$pf")
+        if git apply --reverse --check "$pf" 2>/dev/null; then
+            echo "⏭️  $PNAME 已经应用，跳过"
+        elif git apply --check "$pf" 2>/dev/null; then
+            git apply "$pf"
+            echo "✅ $PNAME 已应用"
+            APPLIED=1
+        else
+            echo "⚠️  $PNAME 跳过（与当前版本不兼容）"
+        fi
+    done
+fi
+
 # ── Install standalone files ──
 
 # Disclosure Router (记忆主动注入)

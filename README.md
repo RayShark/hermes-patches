@@ -9,6 +9,8 @@
 
 **🔒 隐私：多用户不再互相泄露**
 session_search 和 memory 按用户隔离，中文搜索(CJK trigram)也已修复。
+- **微信隔离**: iLink API 的 from_user_id 始终返回 bot 自己的 ID，导致微信对话会串到其他用户。补丁通过 `HINDSIGHT_SKIP_PLATFORMS` 环境变量禁用微信的 Hindsight 自动存储，并在 session_search 中隐藏微信会话。
+  PR: https://github.com/NousResearch/hermes-agent/pull/27274
 
 **🧠 长对话不失忆**
 上下文压缩不再削弱 memory 权威性，你设定的规则在整个会话期间持续生效。
