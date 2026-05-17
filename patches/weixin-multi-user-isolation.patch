@@ -1,37 +1,24 @@
 diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
-index 52b1ac247..eb15f979b 100644
+index f7709172d..52139be4c 100644
 --- a/plugins/memory/hindsight/__init__.py
 +++ b/plugins/memory/hindsight/__init__.py
-@@ -1428,6 +1428,16 @@ class HindsightMemoryProvider(MemoryProvider):
-             logger.debug("sync_turn: skipped (shutting down)")
+@@ -1426,10 +1426,12 @@ class HindsightMemoryProvider(MemoryProvider):
              return
  
-+        # Skip retain for platforms where the upstream API does not provide
-+        # real sender IDs (e.g. iLink Bot API reports bot's own user_id for
-+        # all messages).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
-+        # exclude platforms whose messages cannot be attributed to real users.
-+        _skip = os.environ.get("HINDSIGHT_SKIP_PLATFORMS", "weixin")
-+        _skip_set = {p.strip().lower() for p in _skip.split(",") if p.strip()} if _skip else set()
-+        if self._platform in _skip_set:
-+            logger.debug("sync_turn: skipped (platform %s in HINDSIGHT_SKIP_PLATFORMS)", self._platform)
-+            return
-+
-         if session_id:
-             self._session_id = str(session_id).strip()
- 
-diff --git a/tests/tools/test_session_search.py b/tests/tools/test_session_search.py
-index 8e67f2303..e9972f0dc 100644
---- a/tests/tools/test_session_search.py
-+++ b/tests/tools/test_session_search.py
-@@ -253,7 +253,7 @@ class TestRecentSessionListing:
-         assert result["success"] is True
-         mock_db.list_sessions_rich.assert_called_once_with(
-             limit=10,
--            exclude_sources=["tool"],
-+            exclude_sources=["tool", "weixin"],
-             order_by_last_active=True,
-         )
- 
+         # Skip retain for platforms whose messages cannot be attributed to
+-        # real users (e.g. iLink WeChat bot reports all messages as bot's own
+-        # from_user_id).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
+-        # extend; set to "" to disable the gate entirely.
+-        _skip = os.environ.get("HINDSIGHT_SKIP_PLATFORMS", "weixin")
++        # real users.  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
++        # enable; default is disabled (all platforms retain normally).
++        # WeChat iLink Bot uses bot's own user_id for all messages, but
++        # Hindsight bank isolation (hindsight-{user_id}) keeps WeChat
++        # memories separate from other platforms automatically.
++        _skip = os.environ.get("HINDSIGHT_SKIP_PLATFORMS", "")
+         if _skip and self._platform in {p.strip() for p in _skip.split(",") if p.strip()}:
+             logger.debug("sync_turn: skipped (platform %s in HINDSIGHT_SKIP_PLATFORMS)", self._platform)
+             return
 diff --git a/tools/session_search_tool.py b/tools/session_search_tool.py
 index e73cce6bb..e45f9e4b0 100644
 --- a/tools/session_search_tool.py
