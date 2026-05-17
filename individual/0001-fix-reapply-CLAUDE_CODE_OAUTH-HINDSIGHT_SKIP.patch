@@ -1,0 +1,79 @@
+From 1c888d70c7215437bcaa7ee9efe0141304eebcf1 Mon Sep 17 00:00:00 2001
+From: Cyrene963 <Nitrogen@users.noreply.github.com>
+Date: Sun, 17 May 2026 17:46:13 +0800
+Subject: [PATCH] fix: reapply CLAUDE_CODE_OAUTH exclusion +
+ HINDSIGHT_SKIP_PLATFORMS
+
+- hermes_cli/auth.py: exclude CLAUDE_CODE_OAUTH_TOKEN from implicit env vars
+- hermes_cli/providers.py: same exclusion
+- hermes_cli/web_server.py: same exclusion
+- plugins/memory/hindsight: skip sync_turn for weixin platform
+---
+ hermes_cli/auth.py                   | 2 +-
+ hermes_cli/providers.py              | 2 +-
+ hermes_cli/web_server.py             | 2 +-
+ plugins/memory/hindsight/__init__.py | 9 +++++++++
+ 4 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/hermes_cli/auth.py b/hermes_cli/auth.py
+index 2dcf6a03b..ebbc34593 100644
+--- a/hermes_cli/auth.py
++++ b/hermes_cli/auth.py
+@@ -279,7 +279,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
+         name="Anthropic",
+         auth_type="api_key",
+         inference_base_url="https://api.anthropic.com",
+-        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
++        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
+         base_url_env_var="ANTHROPIC_BASE_URL",
+     ),
+     "alibaba": ProviderConfig(
+diff --git a/hermes_cli/providers.py b/hermes_cli/providers.py
+index 08fc173dc..ca13a7422 100644
+--- a/hermes_cli/providers.py
++++ b/hermes_cli/providers.py
+@@ -90,7 +90,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+     ),
+     "anthropic": HermesOverlay(
+         transport="anthropic_messages",
+-        extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
++        extra_env_vars=("ANTHROPIC_TOKEN",),
+     ),
+     "zai": HermesOverlay(
+         transport="openai_chat",
+diff --git a/hermes_cli/web_server.py b/hermes_cli/web_server.py
+index bdb24554f..e6f29631d 100644
+--- a/hermes_cli/web_server.py
++++ b/hermes_cli/web_server.py
+@@ -1352,7 +1352,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
+             "has_refresh_token": bool(cc_creds.get("refreshToken")),
+         }
+ 
+-    env_token = os.getenv("ANTHROPIC_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
++    env_token = os.getenv("ANTHROPIC_TOKEN")
+     if env_token:
+         return {
+             "logged_in": True,
+diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
+index 3a42a3204..f7709172d 100644
+--- a/plugins/memory/hindsight/__init__.py
++++ b/plugins/memory/hindsight/__init__.py
+@@ -1425,6 +1425,15 @@ class HindsightMemoryProvider(MemoryProvider):
+             logger.debug("sync_turn: skipped (shutting down)")
+             return
+ 
++        # Skip retain for platforms whose messages cannot be attributed to
++        # real users (e.g. iLink WeChat bot reports all messages as bot's own
++        # from_user_id).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
++        # extend; set to "" to disable the gate entirely.
++        _skip = os.environ.get("HINDSIGHT_SKIP_PLATFORMS", "weixin")
++        if _skip and self._platform in {p.strip() for p in _skip.split(",") if p.strip()}:
++            logger.debug("sync_turn: skipped (platform %s in HINDSIGHT_SKIP_PLATFORMS)", self._platform)
++            return
++
+         if session_id:
+             self._session_id = str(session_id).strip()
+ 
+-- 
+2.39.5
+
