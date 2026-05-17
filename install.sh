@@ -143,4 +143,49 @@ else
 fi
 
 echo ""
-echo "回滚命令: cd $HERMES_DIR && git reset --hard ${ORIGINAL_HEAD:0:8}"
+
+# ── Install auto-reapply hook in hermes update command ──
+MAIN_PY="$HERMES_DIR/hermes_cli/main.py"
+if [ -f "$MAIN_PY" ] && ! grep -q "_reapply_community_patches" "$MAIN_PY" 2>/dev/null; then
+    echo ""
+    echo "🔧 安装 hermes update 自动打补丁钩子..."
+    "$HERMES_DIR/venv/bin/python3" -c "
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    c = f.read()
+if '_reapply_community_patches' in c:
+    print('  ⏭️  钩子已存在')
+    sys.exit(0)
+func = '''
+def _reapply_community_patches() -> None:
+    \"\"\"Reapply community patches after hermes update. Idempotent.\"\"\"
+    import subprocess as _sp
+    patches_dir = Path.home() / \".hermes\" / \"patches\"
+    install_sh = patches_dir / \"install.sh\"
+    if not install_sh.exists():
+        return
+    print()
+    print(\"📦 Reapplying community patches...\")
+    try:
+        result = _sp.run([\"bash\", str(install_sh)], cwd=str(patches_dir),
+                         capture_output=True, text=True, timeout=120)
+        for line in result.stdout.splitlines():
+            if line.strip() and not line.startswith((\"╔\", \"║\", \"╚\")):
+                print(f\"  {line}\")
+        if result.returncode != 0:
+            print(f\"  ⚠️  Patch reapplication had issues (exit {result.returncode})\")
+    except Exception:
+        pass
+
+'''
+if 'def _cmd_update_impl' in c:
+    c = c.replace('def _cmd_update_impl(args, gateway_mode: bool):', func + 'def _cmd_update_impl(args, gateway_mode: bool):')
+    c = c.replace('        print(\"Tip: You can now select a provider and model:\")', '        _reapply_community_patches()\\n\\n        print(\"Tip: You can now select a provider and model:\")')
+    with open(path, 'w') as f:
+        f.write(c)
+    print('  ✅ 钩子已安装')
+else:
+    print('  ⚠️  未找到 _cmd_update_impl，跳过')
+" "$MAIN_PY"
+fi
