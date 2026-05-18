@@ -1,0 +1,26 @@
+diff --git a/tests/tools/test_session_search.py b/tests/tools/test_session_search.py
+index 8e67f2303..e9972f0dc 100644
+--- a/tests/tools/test_session_search.py
++++ b/tests/tools/test_session_search.py
+@@ -253,7 +253,7 @@ class TestRecentSessionListing:
+         assert result["success"] is True
+         mock_db.list_sessions_rich.assert_called_once_with(
+             limit=10,
+-            exclude_sources=["tool"],
++            exclude_sources=["tool", "weixin"],
+             order_by_last_active=True,
+         )
+ 
+diff --git a/tools/session_search_tool.py b/tools/session_search_tool.py
+index e73cce6bb..e45f9e4b0 100644
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -262,7 +262,7 @@ async def _summarize_session(
+ # Sources that are excluded from session browsing/searching by default.
+ # Third-party integrations (Paperclip agents, etc.) tag their sessions with
+ # HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
+-_HIDDEN_SESSION_SOURCES = ("tool",)
++_HIDDEN_SESSION_SOURCES = ("tool", "weixin")
+ 
+ 
+ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:

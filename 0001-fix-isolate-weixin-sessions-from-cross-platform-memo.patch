@@ -1,0 +1,78 @@
+From bd0b503659953faba2f852ffbdc72e67c00574a4 Mon Sep 17 00:00:00 2001
+From: Cyrene963 <Nitrogen@users.noreply.github.com>
+Date: Sun, 17 May 2026 13:14:15 +0800
+Subject: [PATCH] fix: isolate weixin sessions from cross-platform memory
+ leakage
+
+The iLink Bot API (used by the weixin platform adapter) reports the bot's
+own user_id as from_user_id for ALL inbound messages. This causes:
+
+1. session_search returning weixin conversations to non-weixin users
+2. Hindsight storing weixin conversations in the wrong user's bank
+
+Changes:
+- tools/session_search_tool.py: Add 'weixin' to _HIDDEN_SESSION_SOURCES
+  so session_search and recent-session browsing exclude weixin sessions
+- plugins/memory/hindsight/__init__.py: Add HINDSIGHT_SKIP_PLATFORMS env
+  var (default: 'weixin') to gate sync_turn retain per platform. Users
+  can override with comma-separated platform names or empty string to
+  disable the gate entirely.
+- tests: Update test_session_search.py assertion to match new exclude list
+
+Related: PR #12571 (session_search user_id filtering)
+---
+ plugins/memory/hindsight/__init__.py | 10 ++++++++++
+ tests/tools/test_session_search.py   |  2 +-
+ tools/session_search_tool.py         |  2 +-
+ 3 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
+index 52b1ac247..eb15f979b 100644
+--- a/plugins/memory/hindsight/__init__.py
++++ b/plugins/memory/hindsight/__init__.py
+@@ -1428,6 +1428,16 @@ class HindsightMemoryProvider(MemoryProvider):
+             logger.debug("sync_turn: skipped (shutting down)")
+             return
+ 
++        # Skip retain for platforms where the upstream API does not provide
++        # real sender IDs (e.g. iLink Bot API reports bot's own user_id for
++        # all messages).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
++        # exclude platforms whose messages cannot be attributed to real users.
++        _skip = os.environ.get("HINDSIGHT_SKIP_PLATFORMS", "weixin")
++        _skip_set = {p.strip().lower() for p in _skip.split(",") if p.strip()} if _skip else set()
++        if self._platform in _skip_set:
++            logger.debug("sync_turn: skipped (platform %s in HINDSIGHT_SKIP_PLATFORMS)", self._platform)
++            return
++
+         if session_id:
+             self._session_id = str(session_id).strip()
+ 
+diff --git a/tests/tools/test_session_search.py b/tests/tools/test_session_search.py
+index 8e67f2303..e9972f0dc 100644
+--- a/tests/tools/test_session_search.py
++++ b/tests/tools/test_session_search.py
+@@ -253,7 +253,7 @@ class TestRecentSessionListing:
+         assert result["success"] is True
+         mock_db.list_sessions_rich.assert_called_once_with(
+             limit=10,
+-            exclude_sources=["tool"],
++            exclude_sources=["tool", "weixin"],
+             order_by_last_active=True,
+         )
+ 
+diff --git a/tools/session_search_tool.py b/tools/session_search_tool.py
+index e73cce6bb..e45f9e4b0 100644
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -262,7 +262,7 @@ async def _summarize_session(
+ # Sources that are excluded from session browsing/searching by default.
+ # Third-party integrations (Paperclip agents, etc.) tag their sessions with
+ # HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
+-_HIDDEN_SESSION_SOURCES = ("tool",)
++_HIDDEN_SESSION_SOURCES = ("tool", "weixin")
+ 
+ 
+ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+-- 
+2.39.5
+

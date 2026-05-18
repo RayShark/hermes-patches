@@ -1,0 +1,84 @@
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 6bd363878..a6a020a10 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -1414,6 +1414,36 @@ def _load_cursorrules(cwd_path: Path) -> str:
+     return _truncate_content(cursorrules_content, ".cursorrules")
+ 
+ 
++
++
++def expand_recall_queries(user_message: str, user_context: dict = None) -> list[str]:
++    """Expand user message into hindsight search queries.
++
++    Delegates to RecallQueryExpander loaded from memory_policy.yaml.
++    Default: passthrough (returns [original_message] only).
++    Returns list of queries: [original_message, expanded1, expanded2, ...]
++    """
++    try:
++        from agent.memory_metacognition import build_query_expander
++        return build_query_expander(user_context=user_context).expand(user_message)
++    except Exception:
++        return [user_message] if user_message else []
++
++
++def build_memory_index_block(user_context: dict = None) -> str:
++    """Generate a compact memory index for the system prompt.
++
++    Delegates to MemoryIndexProvider loaded from memory_policy.yaml.
++    Default: no-op (returns empty string).
++    Returns empty string on failure (non-blocking).
++    """
++    try:
++        from agent.memory_metacognition import build_index_provider
++        return build_index_provider(user_context=user_context).get_index()
++    except Exception:
++        return ''
++
++
+ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
+     """Discover and load context files for the system prompt.
+ 
+diff --git a/run_agent.py b/run_agent.py
+index 1dd4219b2..b45c11778 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -6221,6 +6221,18 @@ class AIAgent:
+             if context_files_prompt:
+                 context_parts.append(context_files_prompt)
+ 
++
++        # Memory Metacognition — inject memory index block for fast reference
++        try:
++            if not hasattr(self, '_memory_index_cached'):
++                from agent.prompt_builder import build_memory_index_block
++                _uc = {"user_id": self._user_id, "chat_id": self._chat_id} if getattr(self, '_user_id', None) else None
++                self._memory_index_cached = build_memory_index_block(user_context=_uc)
++            if self._memory_index_cached:
++                context_parts.append(self._memory_index_cached)
++        except Exception:
++            pass
++
+         # ── Volatile tier (changes per session/turn — never cached) ───
+         volatile_parts: List[str] = []
+ 
+@@ -10927,6 +10939,19 @@ class AIAgent:
+         block_message: Optional[str] = None
+         if not pre_tool_block_checked:
+             try:
++            # Memory Preflight Gate (sequential path)
++            _block_msg: Optional[str] = None
++            try:
++                from agent.memory_metacognition import build_preflight_policy
++                _policy = build_preflight_policy()
++                if _policy:
++                    _check = _policy.check(function_name, function_args)
++                    if _check and _check.status == "FAIL":
++                        _block_msg = _check.message or "Blocked by memory preflight policy"
++                        _execution_blocked = True
++            except Exception:
++                pass
++
+                 from hermes_cli.plugins import get_pre_tool_call_block_message
+                 block_message = get_pre_tool_call_block_message(
+                     function_name, function_args, task_id=effective_task_id or "",
