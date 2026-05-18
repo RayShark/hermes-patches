@@ -1,187 +1,352 @@
-"""Search Indexer — FTS search across memory content.
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false, reportCallIssue=false, reportOperatorIssue=false, reportReturnType=false
 
-Provides search document management and query functionality.
-Search documents are derived from active memories + their path entries.
+"""
+Search Indexer and Query Engine for Memory Graph System.
+
+PostgreSQL full-text search using tsvector + ts_rank_cd with BM25-style
+ranking.  Falls back to ILIKE for very short queries (< 3 chars) where
+websearch_to_tsquery produces empty tsqueries.
 """
 
-from typing import Optional, Dict, Any, List
-import logging
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 
-from sqlalchemy import select, delete, text, func, and_, or_
+from sqlalchemy import select, delete, text, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db.models import Memory, Edge, Path, SearchDocument, GlossaryKeyword, Node
-from ..db import get_session
-from .search_terms import SearchTokenizer, expand_query_terms, build_document_search_terms
+from .models import (
+    Memory,
+    Edge,
+    Path,
+    GlossaryKeyword,
+    SearchDocument,
+    escape_like_literal,
+)
+from .search_terms import build_document_search_terms, expand_query_terms
 
-logger = logging.getLogger(__name__)
-
-
-def _build_search_terms(content: str, keywords: List[str] = None, path: str = "", uri: str = "", disclosure: str = None) -> str:
-    """Build search terms from content + glossary keywords with CJK segmentation."""
-    glossary_text = " ".join(keywords) if keywords else ""
-    return build_document_search_terms(
-        path=path or "",
-        uri=uri or "",
-        content=content,
-        disclosure=disclosure,
-        glossary_text=glossary_text,
-    )
-
-
-def _format_snippet(content: str, query: str, context_chars: int = 80) -> str:
-    """Extract a snippet around the first match of query in content."""
-    if not content:
-        return ""
-    content_lower = content.lower()
-    query_lower = query.lower()
-    pos = content_lower.find(query_lower)
-    if pos < 0:
-        for token in query_lower.split():
-            pos = content_lower.find(token)
-            if pos >= 0:
-                break
-    if pos < 0:
-        return content[:context_chars * 2] + ("..." if len(content) > context_chars * 2 else "")
-
-    start = max(0, pos - context_chars)
-    end = min(len(content), pos + len(query) + context_chars)
-    snippet = content[start:end]
-    if start > 0:
-        snippet = "..." + snippet
-    if end < len(content):
-        snippet = snippet + "..."
-    return snippet
+if TYPE_CHECKING:
+    from .database import DatabaseManager
 
 
 class SearchIndexer:
-    """Manages search document lifecycle and query execution."""
+    """Search index maintenance and query engine (PostgreSQL tsvector + ILIKE fallback)."""
 
-    def __init__(self, session_factory=None):
-        self._session_factory = session_factory or get_session
+    def __init__(self, db: "DatabaseManager"):
+        self._session = db.session
+        self._optional_session = db._optional_session
+        self.db_type = db.db_type
 
-    async def refresh_search_documents_for_node(self, node_uuid: str,
-                                                  namespace: str = "") -> int:
-        """Rebuild search documents for a node's active memory across all its paths."""
-        async with self._session_factory() as session:
-            # Get active memory
-            mem_result = await session.execute(
-                select(Memory).where(Memory.node_uuid == node_uuid, Memory.deprecated == False)
-                .order_by(Memory.created_at.desc())
+    # -----------------------------------------------------------------
+    # Query helpers (stateless)
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _format_search_snippet(content: str, query: str) -> str:
+        """Build a short content snippet around the first literal hit or token hit."""
+        if not content:
+            return ""
+
+        content_lower = content.lower()
+        query_lower = query.lower()
+
+        pos = content_lower.find(query_lower)
+        match_len = len(query)
+
+        if pos < 0:
+            tokens = expand_query_terms(query).split()
+            for token in tokens:
+                if not token:
+                    continue
+                pos = content_lower.find(token.lower())
+                if pos >= 0:
+                    match_len = len(token)
+                    break
+
+        if pos < 0:
+            fallback = content[:80]
+            return fallback + ("..." if len(content) > 80 else "")
+
+        start = max(0, pos - 30)
+        end = min(len(content), pos + match_len + 30)
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(content) else ""
+        return prefix + content[start:end] + suffix
+
+    # -----------------------------------------------------------------
+    # Index maintenance
+    # -----------------------------------------------------------------
+
+    async def _build_search_documents_for_node(
+        self, session: AsyncSession, node_uuid: str, *, namespace: str = "", search_all_namespaces: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Materialize search rows for every reachable path of a node."""
+        memory = (
+            await session.execute(
+                select(Memory)
+                .where(Memory.node_uuid == node_uuid, Memory.deprecated == False)
+                .limit(1)
             )
-            memory = mem_result.scalars().first()
-            if not memory:
-                # No active memory — delete search docs
-                await session.execute(
-                    delete(SearchDocument).where(SearchDocument.node_uuid == node_uuid)
+        ).scalar_one_or_none()
+        if not memory:
+            return []
+
+        path_stmt = (
+            select(Path.namespace, Path.domain, Path.path, Edge.priority, Edge.disclosure)
+            .select_from(Path)
+            .join(Edge, Path.edge_id == Edge.id)
+            .where(Path.node_uuid == node_uuid)
+        )
+        if not search_all_namespaces:
+            path_stmt = path_stmt.where(Path.namespace == namespace)
+        path_stmt = path_stmt.order_by(Path.domain, Path.path)
+        path_rows = (await session.execute(path_stmt)).all()
+        if not path_rows:
+            return []
+
+        keyword_stmt = select(GlossaryKeyword.keyword, GlossaryKeyword.namespace).where(
+            GlossaryKeyword.node_uuid == node_uuid
+        )
+        if not search_all_namespaces:
+            keyword_stmt = keyword_stmt.where(GlossaryKeyword.namespace == namespace)
+
+        keyword_rows = await session.execute(keyword_stmt)
+
+        from collections import defaultdict
+        keywords_by_ns = defaultdict(list)
+        for kw, ns in keyword_rows:
+            if kw:
+                keywords_by_ns[ns].append(kw)
+
+        documents = []
+        for row in path_rows:
+            uri = f"{row.domain}://{row.path}"
+            ns_keywords = keywords_by_ns.get(row.namespace, [])
+            glossary_text = " ".join(sorted(ns_keywords))
+            documents.append(
+                {
+                    "namespace": row.namespace,
+                    "domain": row.domain,
+                    "path": row.path,
+                    "node_uuid": node_uuid,
+                    "memory_id": memory.id,
+                    "uri": uri,
+                    "content": memory.content,
+                    "disclosure": row.disclosure,
+                    "search_terms": build_document_search_terms(
+                        row.path,
+                        uri,
+                        memory.content,
+                        row.disclosure,
+                        glossary_text,
+                    ),
+                    "priority": row.priority,
+                }
+            )
+        return documents
+
+    async def _delete_search_documents_for_node(
+        self, session: AsyncSession, node_uuid: str, *, namespace: str = "", search_all_namespaces: bool = False
+    ) -> None:
+        """Remove derived search rows for a node."""
+        if not search_all_namespaces:
+            await session.execute(
+                delete(SearchDocument).where(
+                    SearchDocument.node_uuid == node_uuid,
+                    SearchDocument.namespace == namespace,
                 )
-                await session.commit()
-                return 0
-
-            # Get glossary keywords
-            kw_result = await session.execute(
-                select(GlossaryKeyword.keyword).where(GlossaryKeyword.node_uuid == node_uuid)
             )
-            keywords = [r[0] for r in kw_result.all()]
-
-            # Delete existing search docs for this node
+        else:
             await session.execute(
                 delete(SearchDocument).where(SearchDocument.node_uuid == node_uuid)
             )
 
-            # Get all paths for this node
-            path_stmt = select(Path).where(Path.node_uuid == node_uuid)
-            if namespace:
-                path_stmt = path_stmt.where(Path.namespace == namespace)
-            path_result = await session.execute(path_stmt)
+    async def _insert_search_documents(
+        self, session: AsyncSession, documents: List[Dict[str, Any]]
+    ) -> None:
+        """Insert fresh derived search rows for one node."""
+        if not documents:
+            return
+        session.add_all(SearchDocument(**doc) for doc in documents)
+        await session.flush()
 
-            count = 0
-            for path_obj in path_result.scalars().all():
-                uri = f"{path_obj.domain}://{path_obj.path}"
+    async def refresh_search_documents_for_node(
+        self, node_uuid: str, session: Optional[AsyncSession] = None, namespace: str = "", refresh_all_namespaces: bool = False
+    ) -> None:
+        """Rebuild derived search rows for one node."""
+        async with self._optional_session(session) as session:
+            documents = await self._build_search_documents_for_node(
+                session, node_uuid, namespace=namespace, search_all_namespaces=refresh_all_namespaces
+            )
+            await self._delete_search_documents_for_node(
+                session, node_uuid, namespace=namespace, search_all_namespaces=refresh_all_namespaces
+            )
+            await self._insert_search_documents(session, documents)
 
-                # Get disclosure from edge
-                disclosure = None
-                if path_obj.edge_id:
-                    edge_result = await session.execute(
-                        select(Edge.disclosure).where(Edge.id == path_obj.edge_id)
-                    )
-                    edge_row = edge_result.first()
-                    if edge_row:
-                        disclosure = edge_row[0]
-
-                search_terms = _build_search_terms(
-                    memory.content, keywords,
-                    path=path_obj.path, uri=uri, disclosure=disclosure,
+    async def get_node_uuids_for_prefix(
+        self, session: AsyncSession, domain: str, base_path: str, namespace: str = ""
+    ) -> List[str]:
+        """Collect unique node UUIDs for a path and all descendants."""
+        safe = escape_like_literal(base_path)
+        result = await session.execute(
+            select(Path.node_uuid)
+            .where(Path.namespace == namespace)
+            .where(Path.domain == domain)
+            .where(
+                or_(
+                    Path.path == base_path,
+                    Path.path.like(f"{safe}/%", escape="\\"),
                 )
+            )
+            .distinct()
+        )
+        return [row[0] for row in result.all()]
 
-                doc = SearchDocument(
-                    node_uuid=node_uuid,
-                    namespace=path_obj.namespace,
-                    domain=path_obj.domain,
-                    path=path_obj.path,
-                    uri=uri,
-                    content=memory.content,
-                    search_terms=search_terms,
-                    memory_id=memory.id,
-                    disclosure=disclosure,
-                    priority=0,
+    async def rebuild_all_search_documents(
+        self, session: Optional[AsyncSession] = None
+    ) -> None:
+        """Fully rebuild the derived search index from live graph state."""
+        async with self._optional_session(session) as session:
+            await session.execute(delete(SearchDocument))
+
+            result = await session.execute(
+                select(Path.node_uuid).distinct()
+            )
+            for (node_uuid,) in result.all():
+                documents = await self._build_search_documents_for_node(
+                    session, node_uuid, search_all_namespaces=True
                 )
-                session.add(doc)
-                count += 1
+                await self._insert_search_documents(session, documents)
 
-            await session.commit()
-            return count
+    # -----------------------------------------------------------------
+    # Public search API (PostgreSQL tsvector + ILIKE fallback)
+    # -----------------------------------------------------------------
 
-    async def search(self, query: str, domain: Optional[str] = None,
-                      namespace: Optional[str] = None,
-                      limit: int = 20) -> List[Dict[str, Any]]:
-        """Search across all search documents."""
-        if not query or not query.strip():
+    # Columns that form the tsvector search text
+    _SEARCH_TEXT_EXPR = (
+        "coalesce(sd.path, '') || ' ' || "
+        "coalesce(sd.uri, '') || ' ' || "
+        "coalesce(sd.content, '') || ' ' || "
+        "coalesce(sd.disclosure, '') || ' ' || "
+        "coalesce(sd.search_terms, '')"
+    )
+
+    async def search(
+        self, query: str, limit: int = 10, domain: Optional[str] = None, namespace: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Search memories using PostgreSQL tsvector with ts_rank_cd ranking.
+
+        Uses websearch_to_tsquery('simple', ...) for query parsing (supports
+        quoted phrases, AND/OR operators, minus exclusion).  Falls back to
+        ILIKE for very short queries (< 3 chars) where tsvector produces
+        empty tsqueries.
+        """
+        if not query.strip():
             return []
 
-        async with self._session_factory() as session:
-            # Use CJK-aware tokenization for query
-            tokens = SearchTokenizer.tokenize(query.strip())
-            if not tokens:
-                return []
+        # Normalize query for tsvector
+        normalized = expand_query_terms(query)
 
-            conditions = []
-            for token in tokens:
-                conditions.append(SearchDocument.search_terms.ilike(f"%{token}%"))
+        # For very short queries, fall back to ILIKE
+        use_ilike = len(query.strip()) < 3
 
-            if not conditions:
-                return []
+        async with self._session() as session:
+            if use_ilike:
+                # ILIKE fallback for short queries
+                like_pattern = f"%{query}%"
+                ilike_cond = or_(
+                    SearchDocument.content.ilike(like_pattern),
+                    SearchDocument.path.ilike(like_pattern),
+                    SearchDocument.uri.ilike(like_pattern),
+                    SearchDocument.search_terms.ilike(like_pattern),
+                    SearchDocument.disclosure.ilike(like_pattern),
+                )
+                stmt = (
+                    select(SearchDocument)
+                    .where(SearchDocument.namespace == namespace)
+                    .where(ilike_cond)
+                    .order_by(SearchDocument.priority.asc())
+                    .limit(limit * 5)
+                )
+                if domain is not None:
+                    stmt = stmt.where(SearchDocument.domain == domain)
+                result = await session.execute(stmt)
+                rows = result.scalars().all()
+            else:
+                # tsvector full-text search with ranking
+                search_text = self._SEARCH_TEXT_EXPR
+                domain_clause = ""
+                params: dict = {"namespace": namespace, "ts_query": normalized, "candidate_limit": limit * 5}
+                if domain is not None:
+                    domain_clause = "AND sd.domain = :domain"
+                    params["domain"] = domain
 
-            stmt = select(SearchDocument).where(and_(*conditions))
-            if domain:
-                stmt = stmt.where(SearchDocument.domain == domain)
-            if namespace is not None:
-                stmt = stmt = stmt.where(SearchDocument.namespace == namespace)
-            stmt = stmt.order_by(SearchDocument.priority.desc()).limit(limit)
+                result = await session.execute(
+                    text(
+                        f"""
+                        SELECT
+                            sd.domain,
+                            sd.path,
+                            sd.node_uuid,
+                            sd.uri,
+                            sd.priority,
+                            sd.content,
+                            sd.disclosure,
+                            ts_rank_cd(
+                                to_tsvector('simple', {search_text}),
+                                websearch_to_tsquery('simple', :ts_query)
+                            ) AS score
+                        FROM {SearchDocument.__tablename__} AS sd
+                        WHERE sd.namespace = :namespace
+                          AND to_tsvector('simple', {search_text})
+                              @@ websearch_to_tsquery('simple', :ts_query)
+                          {domain_clause}
+                        ORDER BY score DESC, sd.priority ASC, char_length(sd.path) ASC
+                        LIMIT :candidate_limit
+                        """
+                    ),
+                    params,
+                )
+                rows = result.all()
 
-            result = await session.execute(stmt)
-            docs = result.scalars().all()
+            # Determine result type
+            is_tsvector = not use_ilike
 
-            return [
-                {
-                    "node_uuid": doc.node_uuid,
-                    "domain": doc.domain,
-                    "path": doc.path,
-                    "uri": doc.uri or f"{doc.domain}://{doc.path}",
-                    "snippet": _format_snippet(doc.content, query),
-                    "content_length": len(doc.content) if doc.content else 0,
-                }
-                for doc in docs
-            ]
+            # Deduplicate by node_uuid
+            matches = []
+            seen_nodes: set = set()
+            for row in rows:
+                if is_tsvector:
+                    m = row._mapping
+                    node_uuid = m.get("node_uuid")
+                else:
+                    node_uuid = row.node_uuid
+                if node_uuid in seen_nodes:
+                    continue
+                seen_nodes.add(node_uuid)
 
-    async def get_node_uuids_for_prefix(self, domain: str, path_prefix: str,
-                                          namespace: str = "") -> List[str]:
-        """Get all node UUIDs whose path starts with a prefix."""
-        async with self._session_factory() as session:
-            stmt = select(Path.node_uuid).where(
-                Path.domain == domain, Path.path.like(f"{escape_like_literal(path_prefix)}%")
-            )
-            if namespace:
-                stmt = stmt.where(Path.namespace == namespace)
-            result = await session.execute(stmt)
-            return [r[0] for r in result.all()]
+                if is_tsvector:
+                    # RowProxy (tsvector path)
+                    matches.append({
+                        "domain": m["domain"],
+                        "path": m["path"],
+                        "uri": m["uri"],
+                        "name": m["path"].rsplit("/", 1)[-1],
+                        "snippet": self._format_search_snippet(m["content"], query),
+                        "priority": m["priority"],
+                        "disclosure": m["disclosure"],
+                        "score": float(m.get("score", 0)),
+                    })
+                else:
+                    # ORM object (ILIKE path)
+                    matches.append({
+                        "domain": row.domain,
+                        "path": row.path,
+                        "uri": row.uri,
+                        "name": row.path.rsplit("/", 1)[-1],
+                        "snippet": self._format_search_snippet(row.content, query),
+                        "priority": row.priority,
+                        "disclosure": row.disclosure,
+                    })
+                if len(matches) >= limit:
+                    break
+
+            return matches
