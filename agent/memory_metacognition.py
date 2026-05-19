@@ -1199,3 +1199,60 @@ def build_conversation_recall(user_context: Optional[Dict] = None) -> Conversati
         max_entities=cfg.get("max_entities", 5),
         timeout=cfg.get("timeout", 8),
     )
+
+
+# ─── Memory Router ────────────────────────────────────────────────
+class MemoryRouter:
+    """Classifies queries and writes to route to the correct memory store."""
+
+    _FACT_PATTERNS = [
+        r'几岁|年龄|出生|住在|是什么|什么技术|什么样|考了|多少钱|什么时候',
+        r'who|what|when|where|how old|born|live|tech.?stack|score',
+    ]
+    _HISTORY_PATTERNS = [
+        r'之前|上次|聊过|说过|讨论过|历史|记得.*说过',
+        r'before|last time|previously|discussed|history',
+    ]
+    _RULE_PATTERNS = [
+        r'怎么用|如何配置|工具|格式|规则|禁止|必须|配置',
+        r'how to|config|rule|format|must|forbid|tool',
+    ]
+
+    def __init__(self):
+        self._gap_log = []
+
+    def classify_query(self, user_input: str) -> dict:
+        import re as _re
+        text = user_input.lower()
+        for p in self._FACT_PATTERNS:
+            if _re.search(p, text):
+                return {'intent': 'fact_lookup', 'primary_source': 'memory_graph', 'fallback_source': 'hindsight'}
+        for p in self._HISTORY_PATTERNS:
+            if _re.search(p, text):
+                return {'intent': 'history_search', 'primary_source': 'hindsight', 'fallback_source': 'none'}
+        for p in self._RULE_PATTERNS:
+            if _re.search(p, text):
+                return {'intent': 'operation_rule', 'primary_source': 'memory_md', 'fallback_source': 'hindsight'}
+        return {'intent': 'ambiguous', 'primary_source': 'memory_graph', 'fallback_source': 'hindsight'}
+
+    def classify_write(self, content: str, context: str = '') -> dict:
+        text = content.lower()
+        if any(w in text for w in ['规则', '禁止', '必须', '格式', 'rule', 'must', 'forbid']):
+            return {'type': 'operation_rule', 'target': 'memory_md', 'confidence': 0.8}
+        if any(w in text for w in ['考了', '买了', '去了', '是', '住在', 'bought', 'went', 'lives']):
+            return {'type': 'user_fact', 'target': 'memory_graph', 'confidence': 0.7}
+        return {'type': 'conversation', 'target': 'hindsight', 'confidence': 0.5}
+
+    def detect_gap(self, query: str, graph_result, hindsight_result) -> dict:
+        if graph_result and graph_result.get('score', 0) >= 0.75:
+            return {'status': 'found', 'source': 'memory_graph', 'confidence': graph_result['score']}
+        if hindsight_result and hindsight_result.get('score', 0) >= 0.80:
+            return {'status': 'found_via_hindsight', 'source': 'hindsight',
+                    'confidence': hindsight_result['score'],
+                    'warning': 'Historical evidence, not canonical fact'}
+        import datetime
+        self._gap_log.append({'query': query, 'timestamp': datetime.datetime.now().isoformat()})
+        return {'status': 'not_found', 'source': None, 'confidence': 0.0, 'action': 'say_unknown'}
+
+    def get_recent_gaps(self, limit: int = 10) -> list:
+        return list(reversed(self._gap_log[-limit:]))
