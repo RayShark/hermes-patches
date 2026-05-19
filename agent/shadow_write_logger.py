@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import time
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 
@@ -32,6 +31,8 @@ def log_shadow_write(
         "assistant_message": assistant_message[:200],
         "candidate_writes": [],
         "would_write": False,
+        "would_review": False,
+        "would_ignore": False,
         "actually_written": False,
         "mode": mode,
     }
@@ -47,10 +48,18 @@ def log_shadow_write(
             "object": c.get("object_value", "")[:100],
             "requires_review": c.get("requires_review", False),
             "reason": c.get("reason", ""),
+            "dedup_key": c.get("dedup_key", ""),
         }
         entry["candidate_writes"].append(write_action)
         
-        if c.get("target_store") not in ("ignore", None) and c.get("importance", 0) >= 0.40:
+        target = c.get("target_store", "ignore")
+        importance = c.get("importance", 0)
+        
+        if target == "review" or c.get("requires_review"):
+            entry["would_review"] = True
+        elif target == "ignore" or importance < 0.40:
+            entry["would_ignore"] = True
+        elif importance >= 0.40:
             entry["would_write"] = True
     
     # Append to daily log file
@@ -66,8 +75,42 @@ def log_shadow_write(
     return entry
 
 
+def generate_readback_queries(candidate: Dict[str, Any]) -> List[str]:
+    """Generate readback queries for a candidate write (dry-run)."""
+    subject = candidate.get("subject", "")
+    predicate = candidate.get("predicate", "")
+    obj = candidate.get("object_value", "")
+    
+    queries = []
+    
+    if subject and predicate:
+        queries.append(f"{subject} {predicate}")
+    if subject and obj:
+        queries.append(f"{subject} {obj[:20]}")
+    
+    # Type-specific queries
+    mtype = candidate.get("memory_type", "")
+    if mtype == "user_fact":
+        queries.append(f"{subject}的成绩")
+        queries.append(f"{subject}的年龄")
+    elif mtype == "project_fact":
+        queries.append(f"{subject}技术栈")
+        queries.append(f"{subject}部署")
+    elif mtype == "preference":
+        queries.append(f"用户偏好")
+        queries.append(f"用户关心什么")
+    elif mtype == "task":
+        queries.append(f"待办任务")
+        queries.append(f"明天做什么")
+    elif mtype == "rule":
+        queries.append(f"操作规则")
+        queries.append(f"注意事项")
+    
+    return queries[:3]  # Max 3 queries
+
+
 def get_shadow_stats(date_str: Optional[str] = None) -> Dict[str, Any]:
-    """Get shadow write statistics for a date."""
+    """Get comprehensive shadow write statistics for a date."""
     if not date_str:
         date_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -82,23 +125,92 @@ def get_shadow_stats(date_str: Optional[str] = None) -> Dict[str, Any]:
             if line:
                 entries.append(json.loads(line))
     
+    # Aggregate statistics
     total_candidates = sum(len(e.get("candidate_writes", [])) for e in entries)
     would_write = sum(1 for e in entries if e.get("would_write"))
+    would_review = sum(1 for e in entries if e.get("would_review"))
+    would_ignore = sum(1 for e in entries if e.get("would_ignore"))
+    
     by_type = {}
     by_target = {}
+    importance_scores = []
+    high_confidence = 0
+    low_confidence = 0
+    duplicate_candidates = 0
+    conflict_candidates = 0
+    unknown_namespace = 0
+    core_write_attempts = 0
+    md_write_attempts = 0
+    
+    seen_dedup_keys = set()
     
     for e in entries:
+        ns = e.get("namespace", "")
+        if not ns or ns == "":
+            unknown_namespace += 1
+        
         for c in e.get("candidate_writes", []):
             mtype = c.get("memory_type", "unknown")
             target = c.get("target_store", "ignore")
+            importance = c.get("importance_score", 0)
+            
             by_type[mtype] = by_type.get(mtype, 0) + 1
             by_target[target] = by_target.get(target, 0) + 1
+            importance_scores.append(importance)
+            
+            if importance >= 0.85:
+                high_confidence += 1
+            elif importance < 0.50:
+                low_confidence += 1
+            
+            # Dedup check
+            dedup_key = c.get("dedup_key", "")
+            if dedup_key:
+                if dedup_key in seen_dedup_keys:
+                    duplicate_candidates += 1
+                seen_dedup_keys.add(dedup_key)
+            
+            # Core write check
+            if target == "memory_graph" and "core://" in c.get("target_path", ""):
+                core_write_attempts += 1
+            
+            # MD write check
+            if target == "memory_md":
+                md_write_attempts += 1
+    
+    avg_importance = sum(importance_scores) / len(importance_scores) if importance_scores else 0
+    
+    # Generate readback queries for top candidates
+    readback_candidates = []
+    for e in entries:
+        for c in e.get("candidate_writes", []):
+            if c.get("importance_score", 0) >= 0.70:
+                queries = generate_readback_queries(c)
+                readback_candidates.append({
+                    "subject": c.get("subject"),
+                    "predicate": c.get("predicate"),
+                    "readback_queries": queries,
+                    "target_path": c.get("target_path"),
+                })
     
     return {
         "date": date_str,
         "entries": len(entries),
-        "total_candidates": total_candidates,
+        "turns_processed": len(entries),
+        "reflection_generated_count": len(entries),
+        "candidate_write_count": total_candidates,
         "would_write_count": would_write,
-        "by_type": by_type,
-        "by_target": by_target,
+        "would_review_count": would_review,
+        "would_ignore_count": would_ignore,
+        "target_store_distribution": by_target,
+        "memory_type_distribution": by_type,
+        "avg_importance_score": round(avg_importance, 3),
+        "high_confidence_count": high_confidence,
+        "low_confidence_count": low_confidence,
+        "duplicate_candidate_count": duplicate_candidates,
+        "conflict_candidate_count": conflict_candidates,
+        "unknown_namespace_count": unknown_namespace,
+        "core_write_attempt_count": core_write_attempts,
+        "memory_md_write_attempt_count": md_write_attempts,
+        "readback_candidates": readback_candidates[:10],
     }
