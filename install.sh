@@ -4,8 +4,9 @@
 #
 # 安装内容:
 #   1. combined-final-v14.patch — 元认知框架+微信隔离
-#   2. memory_metacognition.py — 记忆元认知框架源码
-#   3. memory_policy.default.yaml — 记忆元认知策略配置
+#   2. agent/memory_metacognition.py — 记忆元认知框架源码
+#   3. tools/memory_graph_tool.py — Memory Graph MCP 工具
+#   4. memory_policy.default.yaml — 记忆元认知策略配置
 #
 # 兼容版本: v0.14.0 (v2026.5.16)
 
@@ -56,31 +57,52 @@ echo "🔧 应用补丁..."
 UPSTREAM_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "unknown")
 echo "   当前版本: $UPSTREAM_TAG"
 
-# Apply combined patch
+# 1. Apply combined patch
 PATCH_FILE="$PATCHES_DIR/combined-final-v14.patch"
 if [ -f "$PATCH_FILE" ]; then
     if git apply --check "$PATCH_FILE" 2>/dev/null; then
         git apply "$PATCH_FILE"
         echo "   ✅ combined-final-v14.patch 已应用"
     else
-        echo "   ⚠️ combined-final-v14.patch 已应用或有冲突，尝试 --3way"
+        echo "   ⚠️ combined-final-v14.patch 尝试 --3way"
         git apply --3way "$PATCH_FILE" 2>/dev/null || echo "   ⚠️ 部分修改已存在"
     fi
 else
     echo "   ❌ 找不到 $PATCH_FILE"
 fi
 
-# Copy memory_metacognition.py
+# 2. Copy memory_metacognition.py
 if [ -f "$PATCHES_DIR/agent/memory_metacognition.py" ]; then
+    mkdir -p "$HERMES_DIR/agent"
     cp "$PATCHES_DIR/agent/memory_metacognition.py" "$HERMES_DIR/agent/"
     echo "   ✅ memory_metacognition.py 已复制"
 fi
 
-# Copy memory_policy.default.yaml
+# 3. Copy memory_graph_tool.py
+if [ -f "$PATCHES_DIR/tools/memory_graph_tool.py" ]; then
+    mkdir -p "$HERMES_DIR/tools"
+    cp "$PATCHES_DIR/tools/memory_graph_tool.py" "$HERMES_DIR/tools/"
+    echo "   ✅ memory_graph_tool.py 已复制"
+fi
+
+# 4. Copy memory_policy.default.yaml
 if [ -f "$PATCHES_DIR/memory_policy.default.yaml" ]; then
     cp "$PATCHES_DIR/memory_policy.default.yaml" "$HERMES_DIR/"
     echo "   ✅ memory_policy.default.yaml 已复制"
 fi
+
+# 5. Re-add memory_graph tools to toolsets.py
+if [ -f "$HERMES_DIR/toolsets.py" ] && ! grep -q "memory_graph_read" "$HERMES_DIR/toolsets.py"; then
+    # Find the line with 'memory_graph_purge' and add manage_triggers after it
+    if grep -q "memory_graph_purge" "$HERMES_DIR/toolsets.py"; then
+        sed -i "/'memory_graph_purge'/a\\    'memory_graph_manage_triggers'," "$HERMES_DIR/toolsets.py"
+    fi
+    echo "   ✅ memory_graph tools 已注册到 toolsets"
+fi
+
+# 6. Delete stale .pyc files so Python uses fresh .py
+find "$HERMES_DIR/agent" -name "*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/tools" -name "memory_graph_tool*.pyc" -delete 2>/dev/null
 
 # ── Cleanup ──
 rm -rf "$TEMP_DIR"
@@ -90,6 +112,7 @@ echo "✅ 补丁安装完成！"
 echo ""
 echo "已安装:"
 echo "  - 记忆元认知框架（查询扩展+预检门控+记忆索引）"
+echo "  - Memory Graph 工具（14个MCP工具）"
 echo "  - 微信会话隔离（HINDSIGHT_SKIP_PLATFORMS）"
 echo "  - session_search 微信隐藏"
 echo ""
