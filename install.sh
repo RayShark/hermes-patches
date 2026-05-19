@@ -1,120 +1,72 @@
 #!/bin/bash
-# Hermes Agent 社区补丁合集 — 一键安装
-# 用法: bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/install.sh)
-#
-# 安装内容:
-#   1. combined-final-v14.patch — 元认知框架+微信隔离
-#   2. agent/memory_metacognition.py — 记忆元认知框架源码
-#   3. tools/memory_graph_tool.py — Memory Graph MCP 工具
-#   4. memory_policy.default.yaml — 记忆元认知策略配置
-#
-# 兼容版本: v0.14.0 (v2026.5.16)
+# Hermes Agent 社区补丁合集 — 一键安装脚本
+# 适配版本：v0.14.0 (v2026.5.16)
 
 set -e
 
-REPO_URL="https://github.com/Cyrene963/hermes-patches.git"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PATCHES_DIR="$SCRIPT_DIR"
 HERMES_DIR="${HERMES_HOME:-$HOME/.hermes/hermes-agent}"
-TEMP_DIR=$(mktemp -d)
-PATCHES_DIR=""
 
-echo "╔══════════════════════════════════════════╗"
-echo "║     Hermes Agent 社区补丁合集            ║"
-echo "║     适配版本: v0.14.0 (v2026.5.16)       ║"
-echo "╚══════════════════════════════════════════╝"
+echo "🔧 Hermes 社区补丁合集 v14"
+echo "   适配版本：v0.14.0 (v2026.5.16)"
+echo "   补丁目录：$PATCHES_DIR"
+echo "   Hermes目录：$HERMES_DIR"
 echo ""
-
-# ── Find hermes-agent source ──
-find_hermes_source() {
-    if [ -d "$HERMES_DIR/.git" ]; then return 0; fi
-    for alt in "$HOME/hermes-agent" "/usr/local/lib/hermes-agent" "/opt/hermes-agent"; do
-        if [ -d "$alt/.git" ] && [ -f "$alt/run_agent.py" ]; then
-            HERMES_DIR="$alt"
-            return 0
-        fi
-    done
-    return 1
-}
-
-if ! find_hermes_source; then
-    echo "❌ 找不到 hermes-agent 源码目录"
-    echo "   请设置 HERMES_HOME 环境变量或确认安装路径"
-    exit 1
-fi
-
-echo "📁 hermes-agent: $HERMES_DIR"
-
-# ── Clone patch repo ──
-echo "📥 下载补丁..."
-git clone --depth 1 "$REPO_URL" "$TEMP_DIR/patches" 2>/dev/null
-PATCHES_DIR="$TEMP_DIR/patches"
-
-# ── Apply patches ──
-cd "$HERMES_DIR"
-
-echo "🔧 应用补丁..."
-
-# 检查版本兼容性
-UPSTREAM_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "unknown")
-echo "   当前版本: $UPSTREAM_TAG"
 
 # 1. Apply combined patch
 PATCH_FILE="$PATCHES_DIR/combined-final-v14.patch"
 if [ -f "$PATCH_FILE" ]; then
+    echo "📦 应用 combined-final-v14.patch..."
+    cd "$HERMES_DIR"
     if git apply --check "$PATCH_FILE" 2>/dev/null; then
         git apply "$PATCH_FILE"
-        echo "   ✅ combined-final-v14.patch 已应用"
+        echo "   ✅ 补丁已应用"
     else
-        echo "   ⚠️ combined-final-v14.patch 尝试 --3way"
-        git apply --3way "$PATCH_FILE" 2>/dev/null || echo "   ⚠️ 部分修改已存在"
+        echo "   ⏭️ 补丁已应用或有冲突，跳过"
     fi
-else
-    echo "   ❌ 找不到 $PATCH_FILE"
 fi
 
-# 2. Copy memory_metacognition.py
-if [ -f "$PATCHES_DIR/agent/memory_metacognition.py" ]; then
-    mkdir -p "$HERMES_DIR/agent"
-    cp "$PATCHES_DIR/agent/memory_metacognition.py" "$HERMES_DIR/agent/"
-    echo "   ✅ memory_metacognition.py 已复制"
-fi
+# 2. Copy agent modules
+for module in memory_metacognition.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py; do
+    if [ -f "$PATCHES_DIR/agent/$module" ]; then
+        cp "$PATCHES_DIR/agent/$module" "$HERMES_DIR/agent/"
+        echo "   ✅ agent/$module 已复制"
+    fi
+done
 
-# 3. Copy memory_graph_tool.py
+# 3. Copy tools
 if [ -f "$PATCHES_DIR/tools/memory_graph_tool.py" ]; then
-    mkdir -p "$HERMES_DIR/tools"
     cp "$PATCHES_DIR/tools/memory_graph_tool.py" "$HERMES_DIR/tools/"
     echo "   ✅ memory_graph_tool.py 已复制"
 fi
 
-# 4. Copy memory_policy.default.yaml
-if [ -f "$PATCHES_DIR/memory_policy.default.yaml" ]; then
-    cp "$PATCHES_DIR/memory_policy.default.yaml" "$HERMES_DIR/"
-    echo "   ✅ memory_policy.default.yaml 已复制"
+# 4. Copy config
+if [ -f "$PATCHES_DIR/memory_write_config.yaml" ]; then
+    cp "$PATCHES_DIR/memory_write_config.yaml" "$HOME/.hermes/"
+    echo "   ✅ memory_write_config.yaml 已复制"
 fi
 
-# 5. Re-add memory_graph tools to toolsets.py
-if [ -f "$HERMES_DIR/toolsets.py" ] && ! grep -q "memory_graph_read" "$HERMES_DIR/toolsets.py"; then
-    # Find the line with 'memory_graph_purge' and add manage_triggers after it
-    if grep -q "memory_graph_purge" "$HERMES_DIR/toolsets.py"; then
-        sed -i "/'memory_graph_purge'/a\\    'memory_graph_manage_triggers'," "$HERMES_DIR/toolsets.py"
-    fi
-    echo "   ✅ memory_graph tools 已注册到 toolsets"
+# 5. Copy default memory policy
+if [ -f "$PATCHES_DIR/memory_policy.default.yaml" ] && [ ! -f "$HOME/.hermes/memory_policy.yaml" ]; then
+    cp "$PATCHES_DIR/memory_policy.default.yaml" "$HOME/.hermes/memory_policy.yaml"
+    echo "   ✅ memory_policy.yaml 已初始化"
 fi
 
-# 6. Delete stale .pyc files so Python uses fresh .py
-find "$HERMES_DIR/agent" -name "*.pyc" -delete 2>/dev/null
+# 6. Clean .pyc caches
+find "$HERMES_DIR/agent" -name "memory_metacognition*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "memory_write_pipeline*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "shadow_write_logger*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "hindsight_access_tracker*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "hindsight_reranker*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/tools" -name "memory_graph_tool*.pyc" -delete 2>/dev/null
+echo "   ✅ .pyc 缓存已清理"
 
-# ── Cleanup ──
-rm -rf "$TEMP_DIR"
+# 7. Register memory_graph tools in toolsets
+if ! grep -q "memory_graph_search" "$HERMES_DIR/toolsets.py" 2>/dev/null; then
+    echo "   ⚠️ memory_graph tools 未在 toolsets.py 中注册，请手动添加"
+fi
 
 echo ""
 echo "✅ 补丁安装完成！"
-echo ""
-echo "已安装:"
-echo "  - 记忆元认知框架（查询扩展+预检门控+记忆索引）"
-echo "  - Memory Graph 工具（14个MCP工具）"
-echo "  - 微信会话隔离（HINDSIGHT_SKIP_PLATFORMS）"
-echo "  - session_search 微信隐藏"
-echo ""
-echo "配置: ~/.hermes/memory_policy.yaml"
-echo "文档: https://github.com/Cyrene963/hermes-patches"
+echo "   请重启 gateway: hermes gateway restart"
