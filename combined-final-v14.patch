@@ -1,8 +1,90 @@
+diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
+index 7a9a0961a..97983bfa8 100644
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -1496,6 +1496,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
+     # Check plugin hooks for a block directive before executing anything.
+     block_message: Optional[str] = None
+     if not pre_tool_block_checked:
++        # Memory Preflight Gate
++        _block_msg: Optional[str] = None
++        try:
++            from agent.memory_metacognition import build_preflight_policy
++            _policy = build_preflight_policy()
++            if _policy:
++                _check = _policy.check(function_name, function_args)
++                if _check and _check.status == "FAIL":
++                    _block_msg = _check.message or "Blocked by memory preflight policy"
++        except Exception:
++            pass
++        if _block_msg:
++            return json.dumps({"error": _block_msg}, ensure_ascii=False)
++
+         try:
+             from hermes_cli.plugins import get_pre_tool_call_block_message
+             block_message = get_pre_tool_call_block_message(
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index 41eb2d730..3ab7b651f 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -4057,6 +4057,52 @@ def run_conversation(
+         interrupted=interrupted,
+     )
+ 
++    # ─── Memory Write Pipeline: Shadow Mode ───────────────────────
++    # After each turn, run memory_reflection in shadow mode.
++    # Logs proposed writes without actually writing to Graph.
++    if final_response and not interrupted:
++        try:
++            from agent.memory_write_pipeline import MemoryWritePipeline
++            from agent.shadow_write_logger import log_shadow_write
++
++            _pipeline = MemoryWritePipeline()
++            _reflection = _pipeline.reflect_and_extract(
++                original_user_message if isinstance(original_user_message, str) else "",
++                final_response if isinstance(final_response, str) else ""
++            )
++            _candidates = _reflection.get("candidates", [])
++
++            if _candidates:
++                _user_id = getattr(agent, '_user_id', '') or ''
++                _chat_id = getattr(agent, '_chat_id', '') or ''
++                _namespace = f"telegram:{_chat_id}" if _chat_id else ""
++
++                log_shadow_write(
++                    conversation_id=getattr(agent, 'session_id', '') or '',
++                    user_id=_user_id,
++                    namespace=_namespace,
++                    user_message=original_user_message if isinstance(original_user_message, str) else "",
++                    assistant_message=final_response if isinstance(final_response, str) else "",
++                    candidates=[
++                        {
++                            "memory_type": c.memory_type,
++                            "importance": c.importance,
++                            "target_store": c.target_store,
++                            "target_path": c.target_path,
++                            "subject": c.subject,
++                            "predicate": c.predicate,
++                            "object_value": c.object_value,
++                            "requires_review": c.requires_review,
++                            "reason": c.reason,
++                        }
++                        for c in _candidates
++                    ],
++                    mode="shadow"
++                )
++        except Exception as _shadow_err:
++            logger.debug("Shadow write hook failed: %s", _shadow_err)
++
++
+     # Background memory/skill review — runs AFTER the response is delivered
+     # so it never competes with the user's task for model attention.
+     if final_response and not interrupted and (_should_review_memory or _should_review_skills):
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index 6bd363878..a6a020a10 100644
+index 9c36d205a..029eb0f82 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
-@@ -1414,6 +1414,36 @@ def _load_cursorrules(cwd_path: Path) -> str:
+@@ -1423,6 +1423,36 @@ def _load_cursorrules(cwd_path: Path) -> str:
      return _truncate_content(cursorrules_content, ".cursorrules")
  
  
@@ -39,8 +121,30 @@ index 6bd363878..a6a020a10 100644
  def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
      """Discover and load context files for the system prompt.
  
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index bc29c9ef8..4d2565a1b 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -237,6 +237,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+         if context_files_prompt:
+             context_parts.append(context_files_prompt)
+ 
++        # Memory Metacognition — inject memory index block for fast reference
++        try:
++            from agent.prompt_builder import build_memory_index_block
++            _uc = {"user_id": getattr(agent, '_user_id', None), "chat_id": getattr(agent, '_chat_id', None)}
++            _mem_idx = build_memory_index_block(user_context=_uc)
++            if _mem_idx:
++                context_parts.append(_mem_idx)
++        except Exception:
++            pass
++
++
+     # ── Volatile tier (changes per session/turn — never cached) ───
+     volatile_parts: List[str] = []
+ 
 diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
-index 52b1ac247..eb15f979b 100644
+index 40772f79d..97ae709fb 100644
 --- a/plugins/memory/hindsight/__init__.py
 +++ b/plugins/memory/hindsight/__init__.py
 @@ -1428,6 +1428,16 @@ class HindsightMemoryProvider(MemoryProvider):
@@ -60,72 +164,16 @@ index 52b1ac247..eb15f979b 100644
          if session_id:
              self._session_id = str(session_id).strip()
  
-diff --git a/run_agent.py b/run_agent.py
-index 1dd4219b2..b45c11778 100644
---- a/run_agent.py
-+++ b/run_agent.py
-@@ -6221,6 +6221,18 @@ class AIAgent:
-             if context_files_prompt:
-                 context_parts.append(context_files_prompt)
- 
-+
-+        # Memory Metacognition — inject memory index block for fast reference
-+        try:
-+            if not hasattr(self, '_memory_index_cached'):
-+                from agent.prompt_builder import build_memory_index_block
-+                _uc = {"user_id": self._user_id, "chat_id": self._chat_id} if getattr(self, '_user_id', None) else None
-+                self._memory_index_cached = build_memory_index_block(user_context=_uc)
-+            if self._memory_index_cached:
-+                context_parts.append(self._memory_index_cached)
-+        except Exception:
-+            pass
-+
-         # ── Volatile tier (changes per session/turn — never cached) ───
-         volatile_parts: List[str] = []
- 
-@@ -10927,6 +10939,19 @@ class AIAgent:
-         block_message: Optional[str] = None
-         if not pre_tool_block_checked:
-             try:
-+            # Memory Preflight Gate (sequential path)
-+            _block_msg: Optional[str] = None
-+            try:
-+                from agent.memory_metacognition import build_preflight_policy
-+                _policy = build_preflight_policy()
-+                if _policy:
-+                    _check = _policy.check(function_name, function_args)
-+                    if _check and _check.status == "FAIL":
-+                        _block_msg = _check.message or "Blocked by memory preflight policy"
-+                        _execution_blocked = True
-+            except Exception:
-+                pass
-+
-                 from hermes_cli.plugins import get_pre_tool_call_block_message
-                 block_message = get_pre_tool_call_block_message(
-                     function_name, function_args, task_id=effective_task_id or "",
-diff --git a/tests/tools/test_session_search.py b/tests/tools/test_session_search.py
-index 8e67f2303..e9972f0dc 100644
---- a/tests/tools/test_session_search.py
-+++ b/tests/tools/test_session_search.py
-@@ -253,7 +253,7 @@ class TestRecentSessionListing:
-         assert result["success"] is True
-         mock_db.list_sessions_rich.assert_called_once_with(
-             limit=10,
--            exclude_sources=["tool"],
-+            exclude_sources=["tool", "weixin"],
-             order_by_last_active=True,
-         )
- 
 diff --git a/tools/session_search_tool.py b/tools/session_search_tool.py
-index e73cce6bb..e45f9e4b0 100644
+index 65b9d32f1..7380edcb5 100644
 --- a/tools/session_search_tool.py
 +++ b/tools/session_search_tool.py
-@@ -262,7 +262,7 @@ async def _summarize_session(
+@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Union
  # Sources that are excluded from session browsing/searching by default.
- # Third-party integrations (Paperclip agents, etc.) tag their sessions with
- # HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
+ # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool
+ # so they don't clutter the user's session history.
 -_HIDDEN_SESSION_SOURCES = ("tool",)
 +_HIDDEN_SESSION_SOURCES = ("tool", "weixin")
  
  
- def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+ def _format_timestamp(ts: Union[int, float, str, None]) -> str:

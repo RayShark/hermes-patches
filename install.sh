@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hermes Agent 社区补丁合集 — 一键安装脚本
-# 适配版本：v0.14.0 (v2026.5.16)
+# 适配版本：v0.14.0+ (v2026.5.16+)
 
 set -e
 
@@ -9,7 +9,7 @@ PATCHES_DIR="$SCRIPT_DIR"
 HERMES_DIR="${HERMES_HOME:-$HOME/.hermes/hermes-agent}"
 
 echo "🔧 Hermes 社区补丁合集 v14"
-echo "   适配版本：v0.14.0 (v2026.5.16)"
+echo "   适配版本：v0.14.0+ (v2026.5.16+)"
 echo "   补丁目录：$PATCHES_DIR"
 echo "   Hermes目录：$HERMES_DIR"
 echo ""
