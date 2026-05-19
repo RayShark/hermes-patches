@@ -122,8 +122,36 @@ def _update(args, **kw):
     uri = args.get("uri", "")
     domain, path = _parse_uri(uri, args.get("domain", "core"))
     ns = args.get("namespace") or _get_namespace()
+    
+    old_string = args.get("old_string")
+    new_string = args.get("new_string")
+    append_text = args.get("append")
+    content = args.get("content")
+    
+    # Patch mode: old_string + new_string
+    if old_string is not None and new_string is not None:
+        # Read current content
+        current = _run(GraphService().get_memory_by_path(path, domain=domain, namespace=ns))
+        if not current:
+            return json.dumps({"error": f"Memory not found: {domain}://{path}"})
+        current_content = current.get("content", "")
+        if old_string not in current_content:
+            return json.dumps({"error": f"old_string not found in content"})
+        # Count occurrences
+        count = current_content.count(old_string)
+        if count > 1:
+            return json.dumps({"error": f"old_string matches {count} locations. Must match exactly 1."})
+        content = current_content.replace(old_string, new_string, 1)
+    elif append_text:
+        current = _run(GraphService().get_memory_by_path(path, domain=domain, namespace=ns))
+        if not current:
+            return json.dumps({"error": f"Memory not found: {domain}://{path}"})
+        content = current.get("content", "") + append_text
+    elif not content:
+        return json.dumps({"error": "Provide content, or old_string+new_string, or append"})
+    
     result = _run(GraphService().update_memory(
-        path, args["content"], domain=domain, namespace=ns,
+        path, content, domain=domain, namespace=ns,
         priority=args.get("priority"),
     ))
     return json.dumps(result, ensure_ascii=False, default=str)
@@ -267,23 +295,19 @@ MG_CREATE_SCHEMA = {
 
 MG_UPDATE_SCHEMA = {
     "name": "memory_graph_update",
-    "description": (
-        "Update a memory's content (creates new version, deprecates old). "
-        "TRIGGERS — call this PROACTIVELY when: "
-        "1) An existing memory is outdated or partially wrong based on new information. "
-        "2) A fact has evolved (e.g. project status changed, user preference shifted). "
-        "3) You discover a memory exists but needs correction or expansion. "
-        "Prefer update over creating duplicates. Use memory_graph_search first to check if a related memory exists."
-    ),
+    "description": "Update a memory with patch mode (old_string + new_string), append mode, or full replace. Read first with memory_graph_read.",
     "parameters": {
         "type": "object",
         "properties": {
             "uri": {"type": "string", "description": "URI of the memory to update"},
-            "content": {"type": "string", "description": "New content (replaces old, old version preserved)"},
+            "content": {"type": "string", "description": "Full replacement content"},
+            "old_string": {"type": "string", "description": "[Patch] Text to find (unique match required)"},
+            "new_string": {"type": "string", "description": "[Patch] Replacement text"},
+            "append": {"type": "string", "description": "[Append] Text to add to end"},
             "domain": {"type": "string", "default": "core"},
             "priority": {"type": "integer"},
         },
-        "required": ["uri", "content"],
+        "required": ["uri"],
     },
 }
 
@@ -377,6 +401,64 @@ MG_RECALL_SCHEMA = {
     },
 }
 
+
+# ─── manage_triggers (from Nocturne) ────────────────────────────────
+MG_MANAGE_TRIGGERS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "uri": {"type": "string", "description": "Memory URI to bind triggers to"},
+        "add": {"type": "array", "items": {"type": "string"}, "description": "Trigger words to bind"},
+        "remove": {"type": "array", "items": {"type": "string"}, "description": "Trigger words to unbind"},
+        "domain": {"type": "string", "default": "core"},
+        "namespace": {"type": "string", "default": ""}
+    },
+    "required": ["uri"]
+}
+
+def _manage_triggers(args, **kw):
+    _ensure_db()
+    from agent.memory_graph.services.graph import GraphService
+    from agent.memory_graph.services.glossary import GlossaryService
+    uri = args.get("uri", "")
+    domain, path = _parse_uri(uri, args.get("domain", "core"))
+    ns = args.get("namespace") or _get_namespace()
+    graph = GraphService()
+    glossary = GlossaryService()
+    
+    node = _run(graph.get_memory_by_path(path, domain=domain, namespace=ns))
+    if not node:
+        return json.dumps({"error": f"Memory not found: {domain}://{path}"})
+    
+    node_uuid = node["node_uuid"]
+    add_list = args.get("add", [])
+    remove_list = args.get("remove", [])
+    
+    added = []
+    removed = []
+    
+    for kw in add_list:
+        kw = kw.strip()
+        if kw:
+            result = _run(glossary.add_keyword(kw, node_uuid, namespace=ns))
+            added.append(kw)
+    
+    for kw in remove_list:
+        kw = kw.strip()
+        if kw:
+            result = _run(glossary.remove_keyword(kw, node_uuid, namespace=ns))
+            removed.append(kw)
+    
+    # Get current triggers
+    current = _run(glossary.get_glossary_for_node(node_uuid, namespace=ns))
+    
+    return json.dumps({
+        "uri": f"{domain}://{path}",
+        "added": added,
+        "removed": removed,
+        "current_triggers": current
+    }, ensure_ascii=False, default=str)
+
+
 # ─── Registration ──────────────────────────────────────────────────
 
 _TOOLSET = "memory_graph"
@@ -397,6 +479,8 @@ registry.register(name="memory_graph_search", toolset=_TOOLSET, schema=MG_SEARCH
 registry.register(name="memory_graph_alias", toolset=_TOOLSET, schema=MG_ALIAS_SCHEMA, handler=lambda args, **kw: _alias(args), check_fn=_check_memory_graph, emoji="🧠", description=MG_ALIAS_SCHEMA["description"])
 registry.register(name="memory_graph_glossary_add", toolset=_TOOLSET, schema=MG_GLOSSARY_ADD_SCHEMA, handler=lambda args, **kw: _glossary_add(args), check_fn=_check_memory_graph, emoji="🧠", description=MG_GLOSSARY_ADD_SCHEMA["description"])
 registry.register(name="memory_graph_glossary_scan", toolset=_TOOLSET, schema=MG_GLOSSARY_SCAN_SCHEMA, handler=lambda args, **kw: _glossary_scan(args), check_fn=_check_memory_graph, emoji="🧠", description=MG_GLOSSARY_SCAN_SCHEMA["description"])
+
+registry.register(name="memory_graph_manage_triggers", toolset=_TOOLSET, schema=MG_MANAGE_TRIGGERS_SCHEMA, handler=lambda args, **kw: _manage_triggers(args), check_fn=_check_memory_graph, emoji="🔗", description="Bind/unbind trigger words to memory nodes for automatic glossary linking")
 registry.register(name="memory_graph_recall", toolset=_TOOLSET, schema=MG_RECALL_SCHEMA, handler=lambda args, **kw: _recall(args), check_fn=_check_memory_graph, emoji="🧠", description=MG_RECALL_SCHEMA["description"])
 
 # ─── Nocturne parity tools ─────────────────────────────────────────
