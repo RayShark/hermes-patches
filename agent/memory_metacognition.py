@@ -1206,8 +1206,12 @@ class MemoryRouter:
     """Classifies queries and writes to route to the correct memory store."""
 
     _FACT_PATTERNS = [
-        r'几岁|年龄|出生|住在|是什么|什么技术|什么样|考了|多少钱|什么时候',
+        r'几岁|年龄|出生|住在|是什么|什么技术|什么样|考了|多少钱|什么时候|是谁|叫什么|什么人|哪里人|哪个学校',
+        r'家庭|家庭情况|父母|兄弟姐妹|学校|成绩|分数|考试|mock|备考',
+        r'技术栈|架构|部署|数据库|框架|服务器|环境|配置',
+        r'偏好|规则|格式|账号|密码|token',
         r'who|what|when|where|how old|born|live|tech.?stack|score',
+        r'family|school|score|exam|deploy|config|preference',
     ]
     _HISTORY_PATTERNS = [
         r'之前|上次|聊过|说过|讨论过|历史|记得.*说过',
@@ -1224,6 +1228,20 @@ class MemoryRouter:
     def classify_query(self, user_input: str) -> dict:
         import re as _re
         text = user_input.lower()
+        entities = []
+        for ent in ['左灏', 'nitrogen', 'steven', 'beibei', 'dse', 'telegram', 'hermes', 'hindsight']:
+            if ent in text:
+                entities.append(ent)
+        # Check for compound intent (operation + entity) FIRST
+                # Check for inventory query
+        _inv_patterns = ['记得哪些', '记得什么', '有哪些记忆', '知道哪些', '记忆类别', '有哪些信息']
+        if any(p in text for p in _inv_patterns):
+            return {'intent': 'inventory_query', 'primary_source': 'memory_graph', 'fallback_source': 'none'}
+
+        _compound_kws = ['注意', '规则', '应该', '需要', '怎么发', '怎么用', '发文件', '发给', '帮我发', '走什么']
+        if any(w in text for w in _compound_kws) and entities:
+            return {'intent': 'compound_intent', 'primary_source': 'memory_graph', 'fallback_source': 'memory_md', 'entities': entities}
+
         for p in self._FACT_PATTERNS:
             if _re.search(p, text):
                 return {'intent': 'fact_lookup', 'primary_source': 'memory_graph', 'fallback_source': 'hindsight'}
@@ -1233,6 +1251,13 @@ class MemoryRouter:
         for p in self._RULE_PATTERNS:
             if _re.search(p, text):
                 return {'intent': 'operation_rule', 'primary_source': 'memory_md', 'fallback_source': 'hindsight'}
+        # Check for compound intent (operation + entity)
+        if any(w in text for w in ['注意', '规则', '应该', '需要', '怎么发', '怎么用', '发文件', '发给', '帮我发', '走什么']):
+            if entities:
+                return {'intent': 'compound_intent', 'primary_source': 'memory_graph', 'fallback_source': 'memory_md', 'entities': entities}
+        # If entities found but no clear intent, it's unknown_fact (not ambiguous)
+        if entities:
+            return {'intent': 'unknown_fact', 'primary_source': 'memory_graph', 'fallback_source': 'hindsight', 'entities': entities}
         return {'intent': 'ambiguous', 'primary_source': 'memory_graph', 'fallback_source': 'hindsight'}
 
     def classify_write(self, content: str, context: str = '') -> dict:
