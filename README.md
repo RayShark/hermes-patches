@@ -6,54 +6,69 @@
 
 ## 装有什么用？
 
+**🏗️ 借鉴 Claude Code 架构，提升 Harness 能力**
+同一模型在不同 Agent 下表现差距巨大，本质原因就是 harness（任务规划、工具调用、上下文管理、错误恢复的工程架构）。我们借鉴了 Claude Code 泄露源码中的优秀设计思路，移植到 Hermes Agent：
+- **User Context / System Prompt 分离**：记忆、技能、规则注入到 user message 而非 system prompt → 压缩后保留更高注意力权重，prefix cache 命中率更高
+- **Token Budget 三层防御**：单工具 50K 上限 → 超大输出自动落盘替换为 2KB 预览 → 单轮 200K 总预算
+- **Goal 系统借鉴 Codex /goal**：model-based judge（fail-closed 设计）、anti-laziness（3 轮空转自动暂停）、90% budget wrap-up steering
+
 **🧠 记忆元认知框架**
-你有没有遇到过这种情况：明明上次踩过的坑，教训千叮万嘱记下来了，模型也口口声声说"再也不会犯了，已经修复"——结果下次换个说法问，同样的错再犯一遍？根本原因是它有记忆，但不知道自己记得什么，也不知道什么时候该查，更不会在执行前检查自己有没有违反。光靠"记住教训"没用，因为模型会忘、会绕过、会在新上下文里忽略。这次补丁从工程层强制约束：
-- **不再失忆**：session 启动时自动注入记忆库摘要（"我大概记得什么"），不用等用户问才想起来
-- **搜得更准**：你说"改一下配置"，它不只搜"配置"，还会自动搜 config.yaml、provider、gateway 等相关记忆。你说"做个 patch"，它会搜 branch、PR、四端同步。以前经常搜不到、白问的情况大幅减少
-- **拦得住**：不是靠模型"自觉"，是系统在工具调用前强制检查参数。比如：
-  - `send_message` 含 MEDIA 标签 → 阻止（必须用 curl sendDocument）
-  - `terminal` 含 gateway restart → 警告
-  - `memory` 含注入模式（ignore previous 等）→ 阻止
-  - 你也可以自定义规则：哪些命令要拦、哪些字段必须存在、哪些值不能出现
-- 默认开启（安装即生效），可在 `~/.hermes/memory_policy.yaml` 中自定义或关闭
+明明上次踩过的坑记下来了，下次换个说法问同样的错再犯一遍？根本原因是模型有记忆但不知道自己记得什么。这次补丁从工程层强制约束：
+- **不再失忆**：session 启动时自动注入记忆库摘要，不用等用户问才想起来
+- **搜得更准**：你说"改一下配置"，它不只搜"配置"，还会自动搜 config.yaml、provider、gateway 等相关记忆
+- **拦得住**：不是靠模型"自觉"，是系统在工具调用前强制检查参数（MEDIA 标签 → 阻止、gateway restart → 警告、注入模式 → 阻止）
+- 默认开启，可在 `~/.hermes/memory_policy.yaml` 中自定义或关闭
 
 **🔮 Disclosure Router + 记忆衰减引擎**
-"模型有记忆但不知道自己记得什么"——Disclosure Router 从架构层解决这个问题：
-- **主动注入**：用户消息匹配触发规则后，自动从 hindsight 搜索相关记忆注入 system prompt。不需要模型主动"想起来要搜"
-- **渐进式披露**：记忆不平等对待。每条记忆有 decay score（基于类型权重×时间衰减×召回频率），session 开头只注入 top-8 最重要的，防止信息过载
-- **触发规则**：linuxdo、beibei、记忆系统、hermes-agent 开发、cron 管理、Telegram 投递、vision 图片、git/github、纠正模式、格式偏好、用户身份
+从架构层解决"模型有记忆但不知道自己记得什么"：
+- **主动注入**：用户消息匹配触发规则后，自动从 hindsight 搜索相关记忆注入 system prompt
+- **渐进式披露**：每条记忆有 decay score（类型权重×时间衰减×召回频率），session 开头只注入 top-8 最重要的
 - **记忆版本控制**：每次 `memory(action='replace')` 前自动快照旧内容到 JSONL，支持回滚
 
-**🧠 Memory Graph 工具集**
+**🧠 Memory Graph 工具集（15 个工具）**
 结构化长期记忆系统，替代 Hindsight 盲搜：
 - `memory_graph_search` — 全文搜索记忆节点
-- `memory_graph_read` — 读取节点内容
-- `memory_graph_create` — 创建节点（带冲突检测）
-- `memory_graph_update` — 更新节点（支持 patch 模式）
-- `memory_graph_delete` — 删除节点
+- `memory_graph_read/create/update/delete` — CRUD 操作
 - `memory_graph_list` — 列出子节点
 - `memory_graph_alias` — 创建别名 URI
 - `memory_graph_glossary_add/scan` — 术语管理
 - `memory_graph_recall` — 记忆召回
-- `memory_graph_orphans` — 孤儿节点管理
-- `memory_graph_random` — 随机记忆
+- `memory_graph_orphans/purge` — 清理管理
 - `memory_graph_diagnostics` — 系统诊断
-- `memory_graph_purge` — 清理
-- `memory_graph_manage_triggers` — 绑定/解绑触发词到记忆节点
+- `memory_graph_random` — 随机记忆
+- `memory_graph_manage_triggers` — 触发词绑定
+
+**⚡ 混合技能选择器（3 层筛选）**
+原版每次对话把所有技能描述塞进 system prompt，浪费大量 token。3 层筛选：
+- **Layer 1 快速规则**：正则匹配简单问题（0 token，<10ms）
+- **Layer 2 任务模式**：关键词匹配任务类型（0 token，<50ms）
+- **Layer 3 AI 推理**：仅在前两层不足时调用 LLM
+- 80% 日常对话完全跳过技能加载，强制选中特定技能时也可直接指定
+
+**🛡️ 技能评估门控 + 合规检查**
+- **Skill Evaluation Gate**：代码级强制——agent 必须先调用 `skill_view()` 评估相关技能，才能执行 terminal/write_file/patch 等操作工具
+- **skill-enforcer 插件**：每 N 次工具调用触发合规检查点，验证 agent 是否遵循已加载的技能规则
+- **Fact Verification Gate**：扫描响应中的未验证声明（价格、数字、产品），触发验证请求
 
 **🧠 长对话不失忆**
-上下文压缩不再削弱 memory 权威性，你设定的规则在整个会话期间持续生效。
+上下文压缩不再削弱 memory 权威性。SUMMARY_PREFIX 重写为 ACTIVE/MANDATORY/BINDING 语言，你设定的规则在整个会话期间持续生效。
 
-**🔒 隐私：多用户不再互相泄露**
-- `session_search` 按用户过滤（隐藏 weixin 等平台会话）
-- `HINDSIGHT_SKIP_PLATFORMS` 环境变量控制哪些平台跳过 Hindsight 自动存储
-- Memory Graph namespace 隔离 + Hindsight bank 隔离 + per-user MEMORY.md
+**🔒 多用户三层隔离**
+- **Graph namespace**：长期事实按用户隔离
+- **Hindsight bank**：原始对话证据按用户独立 bank 隔离
+- **Per-user MEMORY.md**：操作规则按用户隔离
+- session_search 按用户过滤，CJK 中文搜索已修复
 
 **🔧 Custom Provider 兼容性**
 修复自定义 provider 的多个 bug：is_custom_provider 参数、max_tokens 默认值、base_url 环境变量、credential pool key。
 
 **🔗 跨渠道记忆统一**
 Telegram/CLI/Discord 记忆互通，`auto-setup` 一键检测 owner。
+
+**🔍 Hindsight 增强**
+- **Reranker**：搜索结果重排序，提升召回质量
+- **Access Tracker**：记忆访问追踪，支持 decay 计算
+- **Shadow Write Logger**：记忆写入审计日志
 
 ## 一行命令安装
 
@@ -79,47 +94,57 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 这些功能已内置在最新版 Hermes 中。install.sh 会自动检测并跳过已合并的补丁。
 
 **仍需本补丁集的修复**：
-- Memory Metacognition Framework (预检门控 + 策略路由)
+- Memory Metacognition Framework（预检门控 + 策略路由）
 - Disclosure Router + 记忆衰减引擎 + 渐进式披露
-- Memory Graph 工具集（15 个 MCP 工具）
+- Memory Graph 工具集（15 个工具）
+- 混合技能选择器（3 层筛选）
+- Skill Evaluation Gate（代码级强制）
+- Hindsight Reranker / Access Tracker
+- Shadow Write Logger
 - CJK 搜索 user_id 隔离
 - Credential pool /model 切换保持
 - Cron 多用户投递隔离
-- Shadow Write Logger（记忆写入审计）
-- Hindsight Reranker（搜索结果重排序）
 
 ## 安装内容
 
 通过 `combined-final-v15.patch` 安装（39 个文件，~8K 行）：
 
-### 核心功能
+### 核心架构（借鉴 Claude Code）
+- User Context / System Prompt 分离（prompt_builder.py）
+- Token Budget 三层防御（50K/2KB/200K）
+- Goal 系统增强（token budget + anti-laziness + wrap-up）
+
+### 记忆系统
 - Memory Metacognition Framework（预检门控 + 记忆注入 + 策略路由）
 - Disclosure Router + 渐进式披露 + 记忆衰减
 - Memory Graph 完整模块（db/services/web/tool，15+ 文件）
 - Memory Write Pipeline（记忆写入流水线）
-- Shadow Write Logger（记忆写入审计日志）
+- Shadow Write Logger（记忆写入审计）
 - Hindsight Reranker（搜索结果重排序）
 - Hindsight Access Tracker（记忆访问追踪）
-- 多用户 session_search 隔离
-- Prompt Builder 增强（记忆注入优化）
-- System Prompt 增强
+- 上下文压缩保留 memory 权威性（SUMMARY_PREFIX 重写）
+
+### 技能系统
+- 混合技能选择器（3 层：正则→关键词→AI）
+- Skill Evaluation Gate（代码级强制评估）
+- FTS5 语义技能检索
+
+### 多用户隔离
+- session_search user_id 过滤
+- Weixin 多用户隔离
+- Hindsight bank 隔离
+- Memory Graph namespace 隔离
 
 ### Custom Provider 修复
 - is_custom_provider 参数修复
 - max_tokens 默认值修复
 - Credential pool key 歧义修复
 - CLI base_url 环境变量查找
-- 缩短 401 认证失败冷却
 
 ### 工具/平台修复
 - session_search 工具增强
 - toolsets.py 记忆工具集定义
 - Web server 认证修复
-- Weixin 多用户隔离
-
-### 测试
-- Memory Graph namespace 隔离测试（19 项）
-- Hindsight bank 隔离测试
 
 ## 配置文件
 
