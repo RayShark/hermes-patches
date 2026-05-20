@@ -30,6 +30,7 @@ class CandidateFact:
     dedup_key: str = ""
     conflict_with: str = ""
     reason: str = ""
+    namespace: str = ""  # telegram:{chat_id} or core
 
 # ─── Importance Gate ─────────────────────────────────────────────
 
@@ -268,7 +269,7 @@ class MemoryWritePipeline:
             'evidence': user_msg[:200],
         }
     
-    def classify_write(self, candidate: CandidateFact, existing_facts: List[Dict] = None) -> Dict[str, Any]:
+    def classify_write(self, candidate: CandidateFact, existing_facts: List[Dict] = None, namespace: str = "") -> Dict[str, Any]:
         """Apply 5 gates to determine if and where to write."""
         existing = existing_facts or []
         
@@ -322,6 +323,7 @@ class MemoryWritePipeline:
             'target_path': candidate.target_path,
             'requires_review': candidate.requires_review,
             'dedup_key': candidate.dedup_key,
+            'namespace': namespace or candidate.namespace,
         }
     
     def write_and_verify(self, candidate: CandidateFact, classification: Dict) -> Dict[str, Any]:
