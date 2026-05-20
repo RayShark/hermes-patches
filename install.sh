@@ -8,16 +8,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES_DIR="$SCRIPT_DIR"
 HERMES_DIR="${HERMES_HOME:-$HOME/.hermes/hermes-agent}"
 
-echo "🔧 Hermes 社区补丁合集 v14"
-echo "   适配版本：v0.14.0+ (v2026.5.16+)"
+echo "🔧 Hermes 社区补丁合集 v15"
+echo "   适配版本：v0.14.0+ (v2026.5.16+) + upstream 42c428841"
 echo "   补丁目录：$PATCHES_DIR"
 echo "   Hermes目录：$HERMES_DIR"
 echo ""
 
 # 1. Apply combined patch
-PATCH_FILE="$PATCHES_DIR/combined-final-v14.patch"
+PATCH_FILE="$PATCHES_DIR/combined-final-v15.patch"
 if [ -f "$PATCH_FILE" ]; then
-    echo "📦 应用 combined-final-v14.patch..."
+    echo "📦 应用 combined-final-v15.patch..."
     cd "$HERMES_DIR"
     if git apply --check "$PATCH_FILE" 2>/dev/null; then
         git apply "$PATCH_FILE"
