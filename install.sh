@@ -73,3 +73,10 @@ fi
 echo ""
 echo "✅ 补丁安装完成！"
 echo "   请重启 gateway: hermes gateway restart"
+
+# 8. Copy memory-graph plugin
+if [ -d "$HOME/.hermes/plugins/memory-graph" ]; then
+    echo "   ✅ memory-graph plugin 已存在"
+else
+    echo "   ⚠️ memory-graph plugin 不存在，请手动安装"
+fi
