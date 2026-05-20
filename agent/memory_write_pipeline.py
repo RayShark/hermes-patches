@@ -237,7 +237,7 @@ class MemoryWritePipeline:
                     subject='user', predicate='preference',
                     object_value=m.group(0),
                     importance=0.80, memory_type='preference',
-                    target_store='memory_graph',
+                    target_store='review' if is_inference else 'memory_graph',
                     target_path='用户档案/偏好',
                     evidence_quote=user_msg, confidence=0.70 if is_inference else 0.85,
                     source_type='agent_inference' if is_inference else 'user_direct',
@@ -262,6 +262,19 @@ class MemoryWritePipeline:
                     source_type='user_direct'
                 ))
         
+        # Deduplicate overlapping regex hits while preserving order. This prevents
+        # one correction such as "不是85，是83" from generating duplicate write
+        # candidates via multiple correction patterns.
+        deduped = []
+        seen = set()
+        for candidate in candidates:
+            key = (candidate.subject, candidate.predicate, candidate.object_value, candidate.memory_type)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(candidate)
+        candidates = deduped
+
         return {
             'candidates': candidates,
             'importance': importance,

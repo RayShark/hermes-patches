@@ -19,7 +19,12 @@ _db_initialized = False
 
 
 def _get_namespace() -> str:
-    """Get current user's namespace. Uses RequestContext first, then plugin fallback."""
+    """Get current user's namespace. Uses RequestContext first, env/config fallback last."""
+    import os
+    # Explicit environment override for tests, cron, and CLI wrappers.
+    ns = os.environ.get("MEMORY_GRAPH_NAMESPACE", "").strip()
+    if ns:
+        return ns
     # Try RequestContext (zero-default principle)
     try:
         from agent.request_context import get_namespace as _rc_get_ns
@@ -31,12 +36,16 @@ def _get_namespace() -> str:
     # Fallback to plugin context
     try:
         from _hermes_user_memory.memory_graph import get_current_namespace
-        return get_current_namespace()
+        ns = get_current_namespace()
+        if ns:
+            return ns
     except ImportError:
         pass
     try:
         from plugins.memory_graph import get_current_namespace
-        return get_current_namespace()
+        ns = get_current_namespace()
+        if ns:
+            return ns
     except ImportError:
         pass
     try:
@@ -47,7 +56,19 @@ def _get_namespace() -> str:
             spec = importlib.util.spec_from_file_location("memory_graph_plugin", plugin_init)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-            return mod.get_current_namespace()
+            ns = mod.get_current_namespace()
+            if ns:
+                return ns
+    except Exception:
+        pass
+    # Terminal/CLI fallback from ~/.hermes/config.yaml.
+    try:
+        import yaml
+        from pathlib import Path
+        cfg = yaml.safe_load((Path.home() / ".hermes" / "config.yaml").read_text()) or {}
+        default_user = str((cfg.get("memory_graph") or {}).get("default_terminal_user") or "").strip()
+        if default_user:
+            return f"telegram:{default_user}"
     except Exception:
         pass
     return ""
@@ -115,6 +136,7 @@ def _create(args, **kw):
     parent_uri = args.get("parent_uri", "")
     domain, parent_path = _parse_uri(parent_uri, args.get("domain", "core"))
     ns = args.get("namespace") or _get_namespace()
+    content = args["content"]
     
     # Zero-default: user data MUST have namespace
     try:

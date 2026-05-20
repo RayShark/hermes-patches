@@ -1,0 +1,387 @@
+diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
+index 7a9a0961a..97983bfa8 100644
+--- a/agent/agent_runtime_helpers.py
++++ b/agent/agent_runtime_helpers.py
+@@ -1496,6 +1496,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
+     # Check plugin hooks for a block directive before executing anything.
+     block_message: Optional[str] = None
+     if not pre_tool_block_checked:
++        # Memory Preflight Gate
++        _block_msg: Optional[str] = None
++        try:
++            from agent.memory_metacognition import build_preflight_policy
++            _policy = build_preflight_policy()
++            if _policy:
++                _check = _policy.check(function_name, function_args)
++                if _check and _check.status == "FAIL":
++                    _block_msg = _check.message or "Blocked by memory preflight policy"
++        except Exception:
++            pass
++        if _block_msg:
++            return json.dumps({"error": _block_msg}, ensure_ascii=False)
++
+         try:
+             from hermes_cli.plugins import get_pre_tool_call_block_message
+             block_message = get_pre_tool_call_block_message(
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index 41eb2d730..3ab7b651f 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -4057,6 +4057,52 @@ def run_conversation(
+         interrupted=interrupted,
+     )
+ 
++    # ─── Memory Write Pipeline: Shadow Mode ───────────────────────
++    # After each turn, run memory_reflection in shadow mode.
++    # Logs proposed writes without actually writing to Graph.
++    if final_response and not interrupted:
++        try:
++            from agent.memory_write_pipeline import MemoryWritePipeline
++            from agent.shadow_write_logger import log_shadow_write
++
++            _pipeline = MemoryWritePipeline()
++            _reflection = _pipeline.reflect_and_extract(
++                original_user_message if isinstance(original_user_message, str) else "",
++                final_response if isinstance(final_response, str) else ""
++            )
++            _candidates = _reflection.get("candidates", [])
++
++            if _candidates:
++                _user_id = getattr(agent, '_user_id', '') or ''
++                _chat_id = getattr(agent, '_chat_id', '') or ''
++                _namespace = f"telegram:{_chat_id}" if _chat_id else ""
++
++                log_shadow_write(
++                    conversation_id=getattr(agent, 'session_id', '') or '',
++                    user_id=_user_id,
++                    namespace=_namespace,
++                    user_message=original_user_message if isinstance(original_user_message, str) else "",
++                    assistant_message=final_response if isinstance(final_response, str) else "",
++                    candidates=[
++                        {
++                            "memory_type": c.memory_type,
++                            "importance": c.importance,
++                            "target_store": c.target_store,
++                            "target_path": c.target_path,
++                            "subject": c.subject,
++                            "predicate": c.predicate,
++                            "object_value": c.object_value,
++                            "requires_review": c.requires_review,
++                            "reason": c.reason,
++                        }
++                        for c in _candidates
++                    ],
++                    mode="shadow"
++                )
++        except Exception as _shadow_err:
++            logger.debug("Shadow write hook failed: %s", _shadow_err)
++
++
+     # Background memory/skill review — runs AFTER the response is delivered
+     # so it never competes with the user's task for model attention.
+     if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 9c36d205a..029eb0f82 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -1423,6 +1423,36 @@ def _load_cursorrules(cwd_path: Path) -> str:
+     return _truncate_content(cursorrules_content, ".cursorrules")
+ 
+ 
++
++
++def expand_recall_queries(user_message: str, user_context: dict = None) -> list[str]:
++    """Expand user message into hindsight search queries.
++
++    Delegates to RecallQueryExpander loaded from memory_policy.yaml.
++    Default: passthrough (returns [original_message] only).
++    Returns list of queries: [original_message, expanded1, expanded2, ...]
++    """
++    try:
++        from agent.memory_metacognition import build_query_expander
++        return build_query_expander(user_context=user_context).expand(user_message)
++    except Exception:
++        return [user_message] if user_message else []
++
++
++def build_memory_index_block(user_context: dict = None) -> str:
++    """Generate a compact memory index for the system prompt.
++
++    Delegates to MemoryIndexProvider loaded from memory_policy.yaml.
++    Default: no-op (returns empty string).
++    Returns empty string on failure (non-blocking).
++    """
++    try:
++        from agent.memory_metacognition import build_index_provider
++        return build_index_provider(user_context=user_context).get_index()
++    except Exception:
++        return ''
++
++
+ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
+     """Discover and load context files for the system prompt.
+ 
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index bc29c9ef8..4d2565a1b 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -237,6 +237,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+         if context_files_prompt:
+             context_parts.append(context_files_prompt)
+ 
++        # Memory Metacognition — inject memory index block for fast reference
++        try:
++            from agent.prompt_builder import build_memory_index_block
++            _uc = {"user_id": getattr(agent, '_user_id', None), "chat_id": getattr(agent, '_chat_id', None)}
++            _mem_idx = build_memory_index_block(user_context=_uc)
++            if _mem_idx:
++                context_parts.append(_mem_idx)
++        except Exception:
++            pass
++
++
+     # ── Volatile tier (changes per session/turn — never cached) ───
+     volatile_parts: List[str] = []
+ 
+diff --git a/hermes_cli/auth.py b/hermes_cli/auth.py
+index f21ada7db..345ca5ca7 100644
+--- a/hermes_cli/auth.py
++++ b/hermes_cli/auth.py
+@@ -319,7 +319,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
+         name="Anthropic",
+         auth_type="api_key",
+         inference_base_url="https://api.anthropic.com",
+-        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
++        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
+         base_url_env_var="ANTHROPIC_BASE_URL",
+     ),
+     "alibaba": ProviderConfig(
+diff --git a/hermes_cli/providers.py b/hermes_cli/providers.py
+index 0017004ee..5a223e193 100644
+--- a/hermes_cli/providers.py
++++ b/hermes_cli/providers.py
+@@ -96,7 +96,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
+     ),
+     "anthropic": HermesOverlay(
+         transport="anthropic_messages",
+-        extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
++        extra_env_vars=("ANTHROPIC_TOKEN",),
+     ),
+     "zai": HermesOverlay(
+         transport="openai_chat",
+diff --git a/hermes_cli/web_server.py b/hermes_cli/web_server.py
+index 7d28ce076..ed754107f 100644
+--- a/hermes_cli/web_server.py
++++ b/hermes_cli/web_server.py
+@@ -1358,7 +1358,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
+             "has_refresh_token": bool(cc_creds.get("refreshToken")),
+         }
+ 
+-    env_token = os.getenv("ANTHROPIC_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
++    env_token = os.getenv("ANTHROPIC_TOKEN")
+     if env_token:
+         return {
+             "logged_in": True,
+diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
+index 40772f79d..7c1457e7a 100644
+--- a/plugins/memory/hindsight/__init__.py
++++ b/plugins/memory/hindsight/__init__.py
+@@ -1428,6 +1428,15 @@ class HindsightMemoryProvider(MemoryProvider):
+             logger.debug("sync_turn: skipped (shutting down)")
+             return
+ 
++        # Skip retain for platforms whose messages cannot be attributed to
++        # real users (e.g. iLink WeChat bot reports all messages as bot's own
++        # from_user_id).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
++        # extend; set to "" to disable the gate entirely.
++        _skip = os.environ.get("HINDSIGHT_SKIP_PLATFORMS", "weixin")
++        if _skip and self._platform in {p.strip() for p in _skip.split(",") if p.strip()}:
++            logger.debug("sync_turn: skipped (platform %s in HINDSIGHT_SKIP_PLATFORMS)", self._platform)
++            return
++
+         if session_id:
+             self._session_id = str(session_id).strip()
+ 
+@@ -1490,6 +1499,119 @@ class HindsightMemoryProvider(MemoryProvider):
+         self._register_atexit()
+         self._retain_queue.put(_do_retain)
+ 
++    def _hindsight_text_fallback(self, query: str, limit: int = 5) -> str:
++        """Fallback recall when the embedding provider is unavailable.
++
++        Hindsight's normal recall needs a fresh query embedding. If the embedding
++        provider is out of balance or otherwise unavailable, returning a hard
++        tool error makes the agent effectively amnesic even though the local
++        PostgreSQL memory store still contains useful text. This fallback uses
++        PostgreSQL full-text + ILIKE over memory_units.text, scoped to the active
++        bank, and clearly marks the result as degraded.
++        """
++        import re
++        from pathlib import Path
++
++        def _env_file_value(path: Path, key: str) -> str:
++            try:
++                for line in path.read_text().splitlines():
++                    line = line.strip()
++                    if not line or line.startswith("#") or "=" not in line:
++                        continue
++                    k, v = line.split("=", 1)
++                    if k.strip() == key:
++                        return v.strip().strip('"').strip("'")
++            except Exception:
++                pass
++            return ""
++
++        database_url = (
++            os.environ.get("HINDSIGHT_API_DATABASE_URL")
++            or _env_file_value(Path.home() / ".hindsight" / "profiles" / "hermes.env", "HINDSIGHT_API_DATABASE_URL")
++            or _env_file_value(Path.home() / ".hermes" / ".env", "HINDSIGHT_API_DATABASE_URL")
++        )
++        if not database_url:
++            return tool_error("Hindsight recall failed and no database URL is available for text fallback.")
++
++        # psycopg2 accepts postgresql:// URLs directly; keep parsing only for
++        # optional ssl/query cleanup compatibility.
++        terms = [t for t in re.findall(r"[A-Za-z0-9_\-]{2,}|[\u4e00-\u9fff]{2,}", query) if t]
++        terms = terms[:8] or [query[:80]]
++        like_patterns = [f"%{t}%" for t in terms]
++        bank = self._bank_id or "hindsight"
++
++        try:
++            import psycopg2
++            import psycopg2.extras
++            with psycopg2.connect(database_url) as conn:
++                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
++                    cur.execute(
++                        """
++                        WITH q AS (
++                            SELECT websearch_to_tsquery('english', %s) AS tsq
++                        )
++                        SELECT id::text, bank_id, text, context, memory_type, fact_type, created_at,
++                               ts_rank(search_vector, q.tsq) AS rank,
++                               (
++                                 SELECT count(*) FROM unnest(%s::text[]) AS pat
++                                 WHERE memory_units.text ILIKE pat OR coalesce(memory_units.context,'') ILIKE pat
++                               ) AS term_hits
++                        FROM memory_units, q
++                        WHERE bank_id = %s
++                          AND (
++                            search_vector @@ q.tsq
++                            OR EXISTS (
++                              SELECT 1 FROM unnest(%s::text[]) AS pat
++                              WHERE memory_units.text ILIKE pat OR coalesce(memory_units.context,'') ILIKE pat
++                            )
++                          )
++                        ORDER BY term_hits DESC, rank DESC, created_at DESC
++                        LIMIT %s
++                        """,
++                        (query, like_patterns, bank, like_patterns, limit),
++                    )
++                    rows = cur.fetchall()
++            if not rows and bank != "hindsight":
++                # Last-resort shared bank fallback: many historical imports live
++                # in the global 'hindsight' bank.
++                with psycopg2.connect(database_url) as conn:
++                    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
++                        cur.execute(
++                            """
++                            SELECT id::text, bank_id, text, context, memory_type, fact_type, created_at,
++                                   0.0 AS rank,
++                                   (
++                                     SELECT count(*) FROM unnest(%s::text[]) AS pat
++                                     WHERE memory_units.text ILIKE pat OR coalesce(memory_units.context,'') ILIKE pat
++                                   ) AS term_hits
++                            FROM memory_units
++                            WHERE bank_id = 'hindsight'
++                              AND EXISTS (
++                                SELECT 1 FROM unnest(%s::text[]) AS pat
++                                WHERE memory_units.text ILIKE pat OR coalesce(memory_units.context,'') ILIKE pat
++                              )
++                            ORDER BY term_hits DESC, created_at DESC
++                            LIMIT %s
++                            """,
++                            (like_patterns, like_patterns, limit),
++                        )
++                        rows = cur.fetchall()
++            if not rows:
++                return json.dumps({"result": "No relevant memories found. (Hindsight text fallback; embedding recall unavailable.)"})
++            lines = []
++            for i, r in enumerate(rows, 1):
++                text = (r.get("text") or "").replace("\n", " ").strip()
++                if len(text) > 700:
++                    text = text[:700] + "..."
++                meta = f"bank={r.get('bank_id')}, type={r.get('memory_type') or r.get('fact_type')}, hits={r.get('term_hits')}"
++                lines.append(f"{i}. [{meta}] {text}")
++            return json.dumps({
++                "result": "Hindsight semantic recall unavailable; used PostgreSQL text fallback.\n" + "\n".join(lines)
++            }, ensure_ascii=False)
++        except Exception as fallback_exc:
++            logger.warning("hindsight text fallback failed: %s", fallback_exc, exc_info=True)
++            return tool_error(f"Hindsight recall failed and text fallback also failed: {fallback_exc}")
++
+     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+         if self._memory_mode == "context":
+             return []
+@@ -1541,6 +1663,13 @@ class HindsightMemoryProvider(MemoryProvider):
+                 return json.dumps({"result": "\n".join(lines)})
+             except Exception as e:
+                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
++                error_text = str(e)
++                if (
++                    "Failed to generate batch embeddings" in error_text
++                    or "AUTHZ_INSUFFICIENT_BALANCE" in error_text
++                    or "Insufficient account balance" in error_text
++                ):
++                    return self._hindsight_text_fallback(query)
+                 return tool_error(f"Failed to search memory: {e}")
+ 
+         elif tool_name == "hindsight_reflect":
+diff --git a/tools/session_search_tool.py b/tools/session_search_tool.py
+index 65b9d32f1..7380edcb5 100644
+--- a/tools/session_search_tool.py
++++ b/tools/session_search_tool.py
+@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Union
+ # Sources that are excluded from session browsing/searching by default.
+ # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool
+ # so they don't clutter the user's session history.
+-_HIDDEN_SESSION_SOURCES = ("tool",)
++_HIDDEN_SESSION_SOURCES = ("tool", "weixin")
+ 
+ 
+ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
+diff --git a/toolsets.py b/toolsets.py
+index 5de07e4c7..e50b80056 100644
+--- a/toolsets.py
++++ b/toolsets.py
+@@ -48,6 +48,12 @@ _HERMES_CORE_TOOLS = [
+     "text_to_speech",
+     # Planning & memory
+     "todo", "memory",
++    # Memory Graph (URI-tree structured memory)
++    "memory_graph_read", "memory_graph_create", "memory_graph_update",
++    "memory_graph_delete", "memory_graph_list", "memory_graph_search",
++    "memory_graph_alias", "memory_graph_glossary_add", "memory_graph_glossary_scan",
++    "memory_graph_recall", "memory_graph_orphans", "memory_graph_random",
++    "memory_graph_diagnostics", "memory_graph_purge",
+     # Session history search
+     "session_search",
+     # Clarifying questions
+@@ -206,6 +212,18 @@ TOOLSETS = {
+         "includes": []
+     },
+     
++    "memory_graph": {
++        "description": "URI-tree structured memory graph (search, create, update, delete, list, alias, glossary)",
++        "tools": [
++            "memory_graph_read", "memory_graph_create", "memory_graph_update",
++            "memory_graph_delete", "memory_graph_list", "memory_graph_search",
++            "memory_graph_alias", "memory_graph_glossary_add", "memory_graph_glossary_scan",
++            "memory_graph_recall", "memory_graph_orphans", "memory_graph_random",
++            "memory_graph_diagnostics", "memory_graph_purge"
++        ],
++        "includes": []
++    },
++
+     "session_search": {
+         "description": "Search and recall past conversations with summarization",
+         "tools": ["session_search"],

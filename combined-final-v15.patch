@@ -744,7 +744,7 @@ index 000000000..23cd01b3b
 +
 +logger = logging.getLogger(__name__)
 +
-+DEFAULT_DB_URL = "postgresql+asyncpg://postgres:20090603Sg%2B@127.0.0.1/hindsight"
++DEFAULT_DB_URL = "postgresql+asyncpg://mg_app@127.0.0.1/hindsight"
 +
 +_engine = None
 +_session_factory = None
