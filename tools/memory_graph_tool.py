@@ -19,20 +19,26 @@ _db_initialized = False
 
 
 def _get_namespace() -> str:
-    """Get current user's namespace from plugin context."""
-    # Try direct import first (if plugin is on sys.path)
+    """Get current user's namespace. Uses RequestContext first, then plugin fallback."""
+    # Try RequestContext (zero-default principle)
+    try:
+        from agent.request_context import get_namespace as _rc_get_ns
+        ns = _rc_get_ns()
+        if ns:
+            return ns
+    except ImportError:
+        pass
+    # Fallback to plugin context
     try:
         from _hermes_user_memory.memory_graph import get_current_namespace
         return get_current_namespace()
     except ImportError:
         pass
-    # Try underscore name (won't work for hyphen dirs but just in case)
     try:
         from plugins.memory_graph import get_current_namespace
         return get_current_namespace()
     except ImportError:
         pass
-    # Direct importlib for hyphenated plugin dir
     try:
         import importlib.util
         from pathlib import Path
@@ -110,12 +116,12 @@ def _create(args, **kw):
     domain, parent_path = _parse_uri(parent_uri, args.get("domain", "core"))
     ns = args.get("namespace") or _get_namespace()
     
-    # Namespace protection: user data must have namespace
-    content = args.get("content", "")
-    path_lower = parent_path.lower()
-    user_paths = ["用户档案", "user_profile", "个人", "偏好", "成绩", "家庭"]
-    if any(p in path_lower for p in user_paths) and not ns:
-        return json.dumps({"error": "User data requires namespace. Configure default_terminal_user in config.yaml."}, ensure_ascii=False)
+    # Zero-default: user data MUST have namespace
+    try:
+        from agent.request_context import require_namespace_for_path
+        ns = require_namespace_for_path(parent_path) or ns
+    except ValueError as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
     
     result = _run(GraphService().create_memory(
         parent_path, content, priority=args.get("priority", 0),
