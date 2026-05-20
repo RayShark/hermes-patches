@@ -60,6 +60,9 @@ find "$HERMES_DIR/agent" -name "shadow_write_logger*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "hindsight_access_tracker*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "hindsight_reranker*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/tools" -name "memory_graph_tool*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "conversation_loop*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "agent_runtime_helpers*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "system_prompt*.pyc" -delete 2>/dev/null
 echo "   ✅ .pyc 缓存已清理"
 
 # 7. Register memory_graph tools in toolsets
