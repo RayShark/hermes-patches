@@ -104,10 +104,11 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 - CJK 搜索 user_id 隔离
 - Credential pool /model 切换保持
 - Cron 多用户投递隔离
+- Telegram 群聊 visible-but-ignored 上下文窗口（非全量历史回填）
 
 ## 安装内容
 
-通过 `combined-final-v15.patch` 安装（39 个文件，~8K 行）：
+通过 `combined-final-v16.patch` 安装：
 
 ### 核心架构（借鉴 Claude Code）
 - User Context / System Prompt 分离（prompt_builder.py）
@@ -144,7 +145,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 ### 工具/平台修复
 - session_search 工具增强
 - toolsets.py 记忆工具集定义
-- Web server 认证修复
+- Telegram 群聊 visible-but-ignored context window：privacy mode 关闭后，普通群消息虽被 `require_mention` 忽略，也会进入短期同群/同 topic 缓存；下一次 @bot 时通过 `MessageEvent.channel_context` 注入。不是 Bot API 全量历史回填，Telegram 未送达的消息仍无法恢复。
 
 ## 配置文件
 

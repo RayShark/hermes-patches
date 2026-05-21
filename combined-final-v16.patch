@@ -385,3 +385,251 @@ index 5de07e4c7..e50b80056 100644
      "session_search": {
          "description": "Search and recall past conversations with summarization",
          "tools": ["session_search"],
+diff --git a/gateway/platforms/telegram.py b/gateway/platforms/telegram.py
+index 459b82553..e49ebe81a 100644
+--- a/gateway/platforms/telegram.py
++++ b/gateway/platforms/telegram.py
+@@ -14,7 +14,8 @@ import os
+ import tempfile
+ import html as _html
+ import re
+-from typing import Dict, List, Optional, Any
++from typing import Dict, List, Optional, Any, Deque
++from collections import deque
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -423,6 +424,7 @@ class TelegramAdapter(BasePlatformAdapter):
+         )
+         self._pending_text_batches: Dict[str, MessageEvent] = {}
+         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
++        self._recent_group_context: Dict[str, Deque[Message]] = {}
+         self._polling_error_task: Optional[asyncio.Task] = None
+         self._polling_conflict_count: int = 0
+         self._polling_network_error_count: int = 0
+@@ -4204,6 +4206,33 @@ class TelegramAdapter(BasePlatformAdapter):
+             return {str(part).strip() for part in raw if str(part).strip()}
+         return {part.strip() for part in str(raw).split(",") if part.strip()}
+ 
++    def _telegram_history_backfill(self) -> bool:
++        """Return whether group trigger messages should fetch recent chat context."""
++        configured = self.config.extra.get("history_backfill")
++        if configured is not None:
++            if isinstance(configured, str):
++                return configured.lower() in {"true", "1", "yes", "on"}
++            return bool(configured)
++        return os.getenv("TELEGRAM_HISTORY_BACKFILL", "false").lower() in {"true", "1", "yes", "on"}
++
++    def _telegram_history_backfill_limit(self) -> int:
++        raw = self.config.extra.get("history_backfill_limit")
++        if raw is None:
++            raw = os.getenv("TELEGRAM_HISTORY_BACKFILL_LIMIT", "20")
++        try:
++            return max(0, int(raw))
++        except (TypeError, ValueError):
++            return 20
++
++    def _telegram_context_cache_limit(self) -> int:
++        raw = self.config.extra.get("context_cache_limit")
++        if raw is None:
++            raw = os.getenv("TELEGRAM_CONTEXT_CACHE_LIMIT", "100")
++        try:
++            return max(0, int(raw))
++        except (TypeError, ValueError):
++            return 100
++
+     def _telegram_allowed_chats(self) -> set[str]:
+         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
+ 
+@@ -4466,6 +4495,161 @@ class TelegramAdapter(BasePlatformAdapter):
+         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
+         return cleaned or text
+ 
++    def _should_capture_channel_context(self, message: Message) -> bool:
++        """Return True when this trigger should receive recent group context."""
++        if not self._telegram_history_backfill():
++            return False
++        if not self._is_group_chat(message):
++            return False
++        if getattr(message, "reply_to_message", None):
++            return False
++        if not self._telegram_require_mention():
++            return False
++        return self._message_mentions_bot(message) or self._message_matches_mention_patterns(message)
++
++    def _telegram_context_cache_key(self, message: Message) -> str:
++        chat = getattr(message, "chat", None)
++        chat_id = str(getattr(chat, "id", ""))
++        thread_id = getattr(message, "message_thread_id", None)
++        # Privacy boundary: cache is scoped to current chat and current topic/thread.
++        return f"{chat_id}:{thread_id if thread_id is not None else ''}"
++
++    def _cache_group_context_message(self, message: Message) -> None:
++        """Keep a bounded in-memory context window for visible group messages.
++
++        This records only updates Telegram already delivered to the bot. With
++        BotFather privacy mode enabled, ordinary non-command/non-mention group
++        messages are never delivered, so they cannot be cached here.
++        """
++        if not self._is_group_chat(message):
++            return
++        limit = self._telegram_context_cache_limit()
++        if limit <= 0:
++            return
++        if not self._format_history_message_for_context(message):
++            return
++        key = self._telegram_context_cache_key(message)
++        cache = self._recent_group_context.get(key)
++        if cache is None or cache.maxlen != limit:
++            cache = deque(cache or [], maxlen=limit)
++            self._recent_group_context[key] = cache
++        message_id = str(getattr(message, "message_id", ""))
++        if message_id and any(str(getattr(item, "message_id", "")) == message_id for item in cache):
++            return
++        cache.append(message)
++
++    def _fetch_cached_channel_context(self, message: Message) -> str:
++        limit = self._telegram_history_backfill_limit()
++        if limit <= 0:
++            return ""
++        cache = self._recent_group_context.get(self._telegram_context_cache_key(message))
++        if not cache:
++            return ""
++        trigger_id = str(getattr(message, "message_id", ""))
++        candidates = [item for item in cache if str(getattr(item, "message_id", "")) != trigger_id]
++        if not candidates:
++            return ""
++        candidates = candidates[-limit:]
++        lines = [self._format_history_message_for_context(item) for item in candidates]
++        lines = [line for line in lines if line]
++        if not lines:
++            return ""
++        return "[Recent visible group messages]\n" + "\n".join(lines)
++
++    @staticmethod
++    def _message_sort_key(message: Message) -> tuple[int, int]:
++        timestamp = getattr(message, "date", None)
++        ts = int(timestamp.timestamp()) if timestamp is not None else 0
++        try:
++            mid = int(getattr(message, "message_id", 0) or 0)
++        except (TypeError, ValueError):
++            mid = 0
++        return ts, mid
++
++    def _format_history_message_for_context(self, message: Message) -> Optional[str]:
++        text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
++        text = str(text).strip()
++        if not text:
++            if getattr(message, "photo", None):
++                text = "(photo)"
++            elif getattr(message, "video", None):
++                text = "(video)"
++            elif getattr(message, "document", None):
++                text = "(document)"
++            elif getattr(message, "audio", None):
++                text = "(audio)"
++            elif getattr(message, "voice", None):
++                text = "(voice)"
++            elif getattr(message, "sticker", None):
++                text = "(sticker)"
++        if not text:
++            return None
++
++        from_user = getattr(message, "from_user", None)
++        sender = (
++            getattr(from_user, "full_name", None)
++            or getattr(from_user, "username", None)
++            or getattr(getattr(message, "sender_chat", None), "title", None)
++            or "Unknown"
++        )
++        if from_user is not None and getattr(from_user, "is_bot", False):
++            sender = f"{sender} [bot]"
++        return f"[{sender}] {text}"
++
++    def _fetch_recent_channel_context(self, message: Message) -> str:
++        """Recover a minimal same-chat/thread reply chain for context.
++
++        Telegram's bot API does not provide general-purpose backscroll like
++        Discord history(). The safe universally-available primitive is the
++        reply chain already embedded in the incoming update payload. We exploit
++        that without claiming broader history access.
++        """
++        limit = self._telegram_history_backfill_limit()
++        if limit <= 0:
++            return ""
++
++        collected: list[Message] = []
++        seen_ids: set[str] = set()
++        trigger_chat = getattr(message, "chat", None)
++        trigger_chat_id = str(getattr(trigger_chat, "id", ""))
++        trigger_thread_id = getattr(message, "message_thread_id", None)
++        current = getattr(message, "reply_to_message", None)
++
++        while current is not None and len(collected) < limit:
++            current_chat = getattr(current, "chat", None)
++            if str(getattr(current_chat, "id", "")) != trigger_chat_id:
++                break
++            if getattr(current, "message_thread_id", None) != trigger_thread_id:
++                break
++
++            current_id = str(getattr(current, "message_id", ""))
++            if current_id and current_id in seen_ids:
++                break
++            if current_id:
++                seen_ids.add(current_id)
++            collected.append(current)
++            current = getattr(current, "reply_to_message", None)
++
++        if not collected:
++            return ""
++
++        collected.sort(key=self._message_sort_key)
++        lines = [self._format_history_message_for_context(item) for item in collected]
++        lines = [line for line in lines if line]
++        if not lines:
++            return ""
++        return "[Recent replied context]\n" + "\n".join(lines)
++
++    def _build_channel_context_for_trigger(self, message: Message) -> str:
++        blocks = []
++        cached = self._fetch_cached_channel_context(message)
++        if cached:
++            blocks.append(cached)
++        replied = self._fetch_recent_channel_context(message)
++        if replied:
++            blocks.append(replied)
++        return "\n\n".join(blocks)
++
+     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
+         """Apply Telegram group trigger rules.
+ 
+@@ -4589,7 +4773,9 @@ class TelegramAdapter(BasePlatformAdapter):
+         msg = self._effective_update_message(update)
+         if not msg or not msg.text:
+             return
+-        if not self._should_process_message(msg):
++        should_process = self._should_process_message(msg)
++        if not should_process:
++            self._cache_group_context_message(msg)
+             return
+         await self._ensure_forum_commands(update.message)
+ 
+@@ -5339,6 +5525,10 @@ class TelegramAdapter(BasePlatformAdapter):
+             message_id=str(message.message_id),
+         )
+         
++        channel_context = None
++        if self._should_capture_channel_context(message):
++            channel_context = self._build_channel_context_for_trigger(message)
++
+         # Extract reply context if this message is a reply.
+         # Prefer Telegram's native partial quote (message.quote, TextQuote)
+         # so a user replying to a single selected substring of a prior
+@@ -5382,6 +5572,7 @@ class TelegramAdapter(BasePlatformAdapter):
+             reply_to_text=reply_to_text,
+             auto_skill=topic_skill,
+             channel_prompt=_channel_prompt,
++            channel_context=channel_context,
+             timestamp=message.date,
+         )
+ 
