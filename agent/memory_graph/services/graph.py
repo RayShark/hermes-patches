@@ -406,6 +406,13 @@ class GraphService:
             )
 
             await session.commit()
+            try:
+                from .search import SearchIndexer
+                await SearchIndexer(self._session_factory).refresh_search_documents_for_node(
+                    child_uuid, namespace=namespace
+                )
+            except Exception as exc:
+                logger.warning("Failed to refresh search documents for created memory %s: %s", child_uuid, exc)
 
             return {
                 "node_uuid": child_uuid,
@@ -445,6 +452,13 @@ class GraphService:
                     edge.disclosure = disclosure
 
             await session.commit()
+            try:
+                from .search import SearchIndexer
+                await SearchIndexer(self._session_factory).refresh_search_documents_for_node(
+                    node_uuid, namespace=namespace
+                )
+            except Exception as exc:
+                logger.warning("Failed to refresh search documents for updated memory %s: %s", node_uuid, exc)
 
             return {
                 "node_uuid": node_uuid,

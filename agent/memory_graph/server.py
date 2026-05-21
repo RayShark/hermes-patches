@@ -207,7 +207,7 @@ def create_app(graph_service=None, search_indexer=None, glossary_service=None):
                 "memories", result["uri"], result["node_uuid"],
                 after={"content": body["content"]},
             )
-            await search_indexer.refresh_search_documents_for_node(result["node_uuid"])
+            await search_indexer.refresh_search_documents_for_node(result["node_uuid"], namespace=ns)
             return result
         except (ValueError, KeyError) as e:
             raise HTTPException(400, str(e))
@@ -286,7 +286,8 @@ def create_app(graph_service=None, search_indexer=None, glossary_service=None):
 
     @app.post("/api/memory-graph/review/rollback")
     async def api_review_rollback(request: Request):
-        require_auth(request)
+        user = require_auth(request)
+        ns = user.get("namespace", "")
         body = await request.json()
         try:
             target_id = body["memory_id"]
@@ -308,7 +309,7 @@ def create_app(graph_service=None, search_indexer=None, glossary_service=None):
                 target.deprecated = False
                 target.migrated_to = None
                 await session.commit()
-                await search_indexer.refresh_search_documents_for_node(target.node_uuid)
+                await search_indexer.refresh_search_documents_for_node(target.node_uuid, namespace=ns)
                 return {"restored_memory_id": target_id, "node_uuid": target.node_uuid}
         except HTTPException:
             raise

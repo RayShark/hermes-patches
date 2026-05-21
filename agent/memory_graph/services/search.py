@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from sqlalchemy import select, delete, text, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import (
+from ..db.models import (
     Memory,
     Edge,
     Path,
@@ -21,19 +21,30 @@ from .models import (
     SearchDocument,
     escape_like_literal,
 )
+from ..db import get_session
 from .search_terms import build_document_search_terms, expand_query_terms
 
 if TYPE_CHECKING:
-    from .database import DatabaseManager
+    from collections.abc import Callable, AsyncIterator
+    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 
 class SearchIndexer:
     """Search index maintenance and query engine (PostgreSQL tsvector + ILIKE fallback)."""
 
-    def __init__(self, db: "DatabaseManager"):
-        self._session = db.session
-        self._optional_session = db._optional_session
-        self.db_type = db.db_type
+    def __init__(self, session_factory=None):
+        self._session_factory = session_factory or get_session
+        self.db_type = "postgresql"
+
+    def _optional_session(self, session: Optional[AsyncSession]):
+        if session is not None:
+            class _ExistingSession:
+                async def __aenter__(self_inner):
+                    return session
+                async def __aexit__(self_inner, exc_type, exc, tb):
+                    return False
+            return _ExistingSession()
+        return self._session_factory()
 
     # -----------------------------------------------------------------
     # Query helpers (stateless)
@@ -96,7 +107,9 @@ class SearchIndexer:
             .where(Path.node_uuid == node_uuid)
         )
         if not search_all_namespaces:
-            path_stmt = path_stmt.where(Path.namespace == namespace)
+            path_stmt = path_stmt.where(
+                or_(Path.namespace == namespace, Path.namespace == "", Path.namespace.is_(None))
+            )
         path_stmt = path_stmt.order_by(Path.domain, Path.path)
         path_rows = (await session.execute(path_stmt)).all()
         if not path_rows:
@@ -106,7 +119,9 @@ class SearchIndexer:
             GlossaryKeyword.node_uuid == node_uuid
         )
         if not search_all_namespaces:
-            keyword_stmt = keyword_stmt.where(GlossaryKeyword.namespace == namespace)
+            keyword_stmt = keyword_stmt.where(
+                or_(GlossaryKeyword.namespace == namespace, GlossaryKeyword.namespace == "", GlossaryKeyword.namespace.is_(None))
+            )
 
         keyword_rows = await session.execute(keyword_stmt)
 
@@ -172,6 +187,7 @@ class SearchIndexer:
         self, node_uuid: str, session: Optional[AsyncSession] = None, namespace: str = "", refresh_all_namespaces: bool = False
     ) -> None:
         """Rebuild derived search rows for one node."""
+        owns_session = session is None
         async with self._optional_session(session) as session:
             documents = await self._build_search_documents_for_node(
                 session, node_uuid, namespace=namespace, search_all_namespaces=refresh_all_namespaces
@@ -180,6 +196,8 @@ class SearchIndexer:
                 session, node_uuid, namespace=namespace, search_all_namespaces=refresh_all_namespaces
             )
             await self._insert_search_documents(session, documents)
+            if owns_session:
+                await session.commit()
 
     async def get_node_uuids_for_prefix(
         self, session: AsyncSession, domain: str, base_path: str, namespace: str = ""
@@ -248,7 +266,7 @@ class SearchIndexer:
         # For very short queries, fall back to ILIKE
         use_ilike = len(query.strip()) < 3
 
-        async with self._session() as session:
+        async with self._session_factory() as session:
             if use_ilike:
                 # ILIKE fallback for short queries
                 like_pattern = f"%{query}%"

@@ -1,5 +1,195 @@
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index be9a09dd2..a4aa74295 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -71,71 +71,6 @@ def _ra():
+     return run_agent
+ 
+ 
+-def _normalized_custom_base_url(value: Any) -> str:
+-    if not isinstance(value, str):
+-        return ""
+-    return value.strip().rstrip("/")
+-
+-
+-def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> bool:
+-    provider_model = str(entry.get("model", "") or "").strip().lower()
+-    if not provider_model:
+-        return True
+-    return provider_model == str(agent_model or "").strip().lower()
+-
+-
+-def _custom_provider_extra_body_for_agent(
+-    *,
+-    provider: str,
+-    model: str,
+-    base_url: str,
+-    custom_providers: List[Dict[str, Any]],
+-) -> Optional[Dict[str, Any]]:
+-    if (provider or "").strip().lower() != "custom":
+-        return None
+-
+-    target_url = _normalized_custom_base_url(base_url)
+-    if not target_url:
+-        return None
+-
+-    fallback: Optional[Dict[str, Any]] = None
+-    for entry in custom_providers or []:
+-        if not isinstance(entry, dict):
+-            continue
+-        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+-            continue
+-        extra_body = entry.get("extra_body")
+-        if not isinstance(extra_body, dict) or not extra_body:
+-            continue
+-        provider_model = str(entry.get("model", "") or "").strip()
+-        if provider_model:
+-            if _custom_provider_model_matches(model, entry):
+-                return dict(extra_body)
+-        elif fallback is None:
+-            fallback = dict(extra_body)
+-
+-    return fallback
+-
+-
+-def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
+-    extra_body = _custom_provider_extra_body_for_agent(
+-        provider=agent.provider,
+-        model=agent.model,
+-        base_url=agent.base_url,
+-        custom_providers=custom_providers,
+-    )
+-    if not extra_body:
+-        return
+-
+-    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+-    merged_extra_body = dict(extra_body)
+-    existing_extra_body = overrides.get("extra_body")
+-    if isinstance(existing_extra_body, dict):
+-        merged_extra_body.update(existing_extra_body)
+-    overrides["extra_body"] = merged_extra_body
+-    agent.request_overrides = overrides
+-
+-
+ def init_agent(
+     agent,
+     base_url: str = None,
+@@ -271,6 +206,35 @@ def init_agent(
+     agent._chat_type = chat_type
+     agent._thread_id = thread_id
+     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
++
++    # Privacy boundary: group/channel/thread agents must not inherit a
++    # sender's private namespace.  They run in a shared chat namespace so
++    # Memory Graph/Hindsight/public memory can represent the group itself.
++    agent._shared_chat_memory_scope = bool(chat_type and chat_type != "dm")
++    try:
++        from agent.request_context import RequestContext, set_context
++        _platform_for_ns = str(platform or "cli")
++        if agent._shared_chat_memory_scope:
++            _ns_parts = [_platform_for_ns, "group"]
++            if chat_id:
++                _ns_parts.append(str(chat_id))
++            if thread_id:
++                _ns_parts.append(str(thread_id))
++            _namespace = ":".join(_ns_parts)
++        else:
++            _identity = user_id or chat_id or ""
++            _namespace = f"{_platform_for_ns}:{_identity}" if _identity else ""
++        set_context(RequestContext(
++            user_id=str(user_id or ""),
++            chat_id=str(chat_id or ""),
++            platform=_platform_for_ns,
++            namespace=_namespace,
++            session_id=str(session_id or agent.session_id or ""),
++            is_admin=False,
++        ))
++        agent._memory_namespace = _namespace
++    except Exception:
++        agent._memory_namespace = ""
+     # Pluggable print function — CLI replaces this with _cprint so that
+     # raw ANSI status lines are routed through prompt_toolkit's renderer
+     # instead of going directly to stdout where patch_stdout's StdoutProxy
+@@ -704,6 +668,10 @@ def init_agent(
+                 client_kwargs["default_headers"] = {
+                     "User-Agent": "claude-code/0.1.0",
+                 }
++            elif base_url_host_matches(effective_base, "gw2.oops.asia"):
++                client_kwargs["default_headers"] = {
++                    "User-Agent": "curl/8.0",
++                }
+             elif base_url_host_matches(effective_base, "portal.qwen.ai"):
+                 client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
+             elif base_url_host_matches(effective_base, "chatgpt.com"):
+@@ -966,19 +934,7 @@ def init_agent(
+     hermes_home = get_hermes_home()
+     agent.logs_dir = hermes_home / "sessions"
+     agent.logs_dir.mkdir(parents=True, exist_ok=True)
+-    # Per-session JSON snapshot writer (~/.hermes/sessions/session_{sid}.json)
+-    # is opt-in via sessions.write_json_snapshots (default False).  state.db
+-    # is canonical — the snapshot is only useful for external tooling that
+-    # reads the JSON files directly.  See run_agent._save_session_log.
+-    agent._session_json_enabled = False
+-    try:
+-        from hermes_cli.config import load_config as _load_sess_cfg
+-        _sess_cfg = (_load_sess_cfg().get("sessions") or {})
+-        agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
+-    except Exception:
+-        pass
+-    # logs_dir is retained unconditionally for request_dump_*.json (debug
+-    # breadcrumb path written by agent_runtime_helpers.dump_api_request_debug).
++    agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
+     
+     # Track conversation messages for session logging
+     agent._session_messages: List[Dict[str, Any]] = []
+@@ -1044,6 +1000,14 @@ def init_agent(
+             agent._memory_enabled = mem_config.get("memory_enabled", False)
+             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
++            # Group/channel/thread contexts are shared public spaces.  Do not
++            # inject global USER.md/MEMORY.md into those prompts: that store is
++            # private to the operator/user profile and can contain sensitive DM
++            # facts.  Shared chat memory must come from the group namespace via
++            # external memory providers / Memory Graph, not from private files.
++            if getattr(agent, "_shared_chat_memory_scope", False):
++                agent._memory_enabled = False
++                agent._user_profile_enabled = False
+             if agent._memory_enabled or agent._user_profile_enabled:
+                 from tools.memory_tool import MemoryStore
+                 agent._memory_store = MemoryStore(
+@@ -1086,10 +1050,19 @@ def init_agent(
+                                 _init_kwargs["session_title"] = _st
+                         except Exception:
+                             pass
+-                    # Thread gateway user identity for per-user memory scoping
+-                    if agent._user_id:
++                    # Thread gateway user identity for per-user memory scoping.
++                    # In shared chats, deliberately do NOT pass user_id to memory
++                    # providers: otherwise bank_id_template={user} resolves to
++                    # the sender's private bank and can leak DM memories into a
++                    # group reply.  Pass a stable group/chat identity instead.
++                    if getattr(agent, "_shared_chat_memory_scope", False):
++                        if agent._memory_namespace:
++                            _init_kwargs["memory_namespace"] = agent._memory_namespace
++                        if agent._chat_id:
++                            _init_kwargs["scope_id"] = agent._chat_id
++                    elif agent._user_id:
+                         _init_kwargs["user_id"] = agent._user_id
+-                    if agent._user_name:
++                    if agent._user_name and not getattr(agent, "_shared_chat_memory_scope", False):
+                         _init_kwargs["user_name"] = agent._user_name
+                     if agent._chat_id:
+                         _init_kwargs["chat_id"] = agent._chat_id
+@@ -1278,7 +1251,6 @@ def init_agent(
+     # Store for reuse by _check_compression_model_feasibility (auxiliary
+     # compression model context-length detection needs the same list).
+     agent._custom_providers = _custom_providers
+-    _merge_custom_provider_extra_body(agent, _custom_providers)
+ 
+     # Check custom_providers per-model context_length
+     if _config_context_length is None and _custom_providers:
 diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
-index 7a9a0961a..97983bfa8 100644
+index b98fe4b44..db05531ae 100644
 --- a/agent/agent_runtime_helpers.py
 +++ b/agent/agent_runtime_helpers.py
 @@ -1496,6 +1496,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
@@ -23,11 +213,246 @@ index 7a9a0961a..97983bfa8 100644
          try:
              from hermes_cli.plugins import get_pre_tool_call_block_message
              block_message = get_pre_tool_call_block_message(
+@@ -1519,6 +1533,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
+             from hermes_state import format_session_db_unavailable
+             return json.dumps({"success": False, "error": format_session_db_unavailable()})
+         from tools.session_search_tool import session_search as _session_search
++        if getattr(agent, "_shared_chat_memory_scope", False):
++            return json.dumps({
++                "success": False,
++                "error": "session_search is disabled in shared group/channel contexts to prevent private conversation leakage. Use group memory instead.",
++            }, ensure_ascii=False)
+         return _session_search(
+             query=function_args.get("query", ""),
+             role_filter=function_args.get("role_filter"),
+@@ -1869,92 +1888,49 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
+ 
+ 
+ 
+-def _iter_pool_sockets(client: Any):
+-    """Yield raw sockets reachable from an OpenAI/httpx client pool.
++def cleanup_dead_connections(agent) -> bool:
++    """Detect and clean up dead TCP connections on the primary client.
+ 
+-    httpcore 1.x stores the concrete HTTP11/HTTP2 connection under
+-    ``conn._connection``; older versions exposed stream attributes directly
+-    on the pool entry. Keep the traversal defensive because these are private
+-    transport internals and vary across httpx/httpcore releases.
++    Inspects the httpx connection pool for sockets in unhealthy states
++    (CLOSE-WAIT, errors).  If any are found, force-closes all sockets
++    and rebuilds the primary client from scratch.
++
++    Returns True if dead connections were found and cleaned up.
+     """
++    client = getattr(agent, "client", None)
++    if client is None:
++        return False
+     try:
+         http_client = getattr(client, "_client", None)
+         if http_client is None:
+-            return
++            return False
+         transport = getattr(http_client, "_transport", None)
+         if transport is None:
+-            return
++            return False
+         pool = getattr(transport, "_pool", None)
+         if pool is None:
+-            return
++            return False
+         connections = (
+             getattr(pool, "_connections", None)
+             or getattr(pool, "_pool", None)
+             or []
+         )
+-    except Exception:
+-        return
+-
+-    seen: set[int] = set()
+-    for conn in list(connections):
+-        candidates = [conn]
+-        inner = getattr(conn, "_connection", None)
+-        if inner is not None:
+-            candidates.append(inner)
+-        for candidate in candidates:
++        dead_count = 0
++        for conn in list(connections):
++            # Check for connections that are idle but have closed sockets
+             stream = (
+-                getattr(candidate, "_network_stream", None)
+-                or getattr(candidate, "_stream", None)
++                getattr(conn, "_network_stream", None)
++                or getattr(conn, "_stream", None)
+             )
+             if stream is None:
+                 continue
+             sock = getattr(stream, "_sock", None)
+             if sock is None:
+-                get_extra_info = getattr(stream, "get_extra_info", None)
+-                if callable(get_extra_info):
+-                    try:
+-                        sock = get_extra_info("socket")
+-                    except Exception:
+-                        sock = None
+-            if sock is None:
+-                wrapped = getattr(stream, "stream", None)
+-                if wrapped is not None:
+-                    sock = getattr(wrapped, "_sock", None)
++                sock = getattr(stream, "stream", None)
++                if sock is not None:
++                    sock = getattr(sock, "_sock", None)
+             if sock is None:
+-                # anyio-backed streams expose the raw socket through
+-                # SocketAttribute.raw_socket when available.
+-                wrapped = getattr(stream, "_stream", None)
+-                extra = getattr(wrapped, "extra", None)
+-                if callable(extra):
+-                    try:
+-                        from anyio.abc import SocketAttribute
+-                        sock = extra(SocketAttribute.raw_socket)
+-                    except Exception:
+-                        sock = None
+-            if sock is None:
+-                continue
+-            marker = id(sock)
+-            if marker in seen:
+                 continue
+-            seen.add(marker)
+-            yield sock
+-
+-
+-def cleanup_dead_connections(agent) -> bool:
+-    """Detect and clean up dead TCP connections on the primary client.
+-
+-    Inspects the httpx connection pool for sockets in unhealthy states
+-    (CLOSE-WAIT, errors).  If any are found, force-closes all sockets
+-    and rebuilds the primary client from scratch.
+-
+-    Returns True if dead connections were found and cleaned up.
+-    """
+-    client = getattr(agent, "client", None)
+-    if client is None:
+-        return False
+-    try:
+-        dead_count = 0
+-        for sock in _iter_pool_sockets(client):
+             # Probe socket health with a non-blocking recv peek
+             import socket as _socket
+             try:
+@@ -2130,7 +2106,36 @@ def force_close_tcp_sockets(client: Any) -> int:
+ 
+     closed = 0
+     try:
+-        for sock in _iter_pool_sockets(client):
++        http_client = getattr(client, "_client", None)
++        if http_client is None:
++            return 0
++        transport = getattr(http_client, "_transport", None)
++        if transport is None:
++            return 0
++        pool = getattr(transport, "_pool", None)
++        if pool is None:
++            return 0
++        # httpx uses httpcore connection pools; connections live in
++        # _connections (list) or _pool (list) depending on version.
++        connections = (
++            getattr(pool, "_connections", None)
++            or getattr(pool, "_pool", None)
++            or []
++        )
++        for conn in list(connections):
++            stream = (
++                getattr(conn, "_network_stream", None)
++                or getattr(conn, "_stream", None)
++            )
++            if stream is None:
++                continue
++            sock = getattr(stream, "_sock", None)
++            if sock is None:
++                sock = getattr(stream, "stream", None)
++                if sock is not None:
++                    sock = getattr(sock, "_sock", None)
++            if sock is None:
++                continue
+             try:
+                 sock.shutdown(_socket.SHUT_RDWR)
+             except OSError:
+@@ -2168,6 +2173,5 @@ __all__ = [
+     "cleanup_dead_connections",
+     "extract_api_error_context",
+     "apply_pending_steer_to_tool_results",
+-    "_iter_pool_sockets",
+     "force_close_tcp_sockets",
+ ]
 diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
-index 41eb2d730..3ab7b651f 100644
+index caac0d3e8..c598e5a00 100644
 --- a/agent/conversation_loop.py
 +++ b/agent/conversation_loop.py
-@@ -4057,6 +4057,52 @@ def run_conversation(
+@@ -164,6 +164,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
+             session_id=agent.session_id,
+             model=agent.model,
+             platform=getattr(agent, "platform", None) or "",
++            user_id=getattr(agent, "_user_id", None) or "",
++            chat_id=getattr(agent, "_chat_id", None) or "",
++            chat_type=getattr(agent, "_chat_type", None) or "",
++            thread_id=getattr(agent, "_thread_id", None) or "",
++            display_name=getattr(agent, "_user_name", None) or "",
+         )
+     except Exception as exc:
+         logger.warning("on_session_start hook failed: %s", exc)
+@@ -510,7 +515,11 @@ def run_conversation(
+             is_first_turn=(not bool(conversation_history)),
+             model=agent.model,
+             platform=getattr(agent, "platform", None) or "",
++            user_id=getattr(agent, "_user_id", None) or "",
+             sender_id=getattr(agent, "_user_id", None) or "",
++            chat_id=getattr(agent, "_chat_id", None) or "",
++            chat_type=getattr(agent, "_chat_type", None) or "",
++            thread_id=getattr(agent, "_thread_id", None) or "",
+         )
+         _ctx_parts: list[str] = []
+         for r in _pre_results:
+@@ -1454,6 +1463,7 @@ def run_conversation(
+                                 }
+                                 messages.append(continue_msg)
+                                 agent._session_messages = messages
++                                agent._save_session_log(messages)
+                                 restart_with_length_continuation = True
+                                 break
+ 
+@@ -3085,6 +3095,7 @@ def run_conversation(
+                     if not agent.quiet_mode:
+                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
+                     agent._session_messages = messages
++                    agent._save_session_log(messages)
+                     continue
+ 
+                 agent._codex_incomplete_retries = 0
+@@ -3409,6 +3420,7 @@ def run_conversation(
+                 
+                 # Save session log incrementally (so progress is visible even if interrupted)
+                 agent._session_messages = messages
++                agent._save_session_log(messages)
+                 
+                 # Continue loop for next response
+                 continue
+@@ -3575,6 +3587,7 @@ def run_conversation(
+                         interim_msg["_thinking_prefill"] = True
+                         messages.append(interim_msg)
+                         agent._session_messages = messages
++                        agent._save_session_log(messages)
+                         continue
+ 
+                     # ── Empty response retry ──────────────────────
+@@ -3708,6 +3721,7 @@ def run_conversation(
+                     }
+                     messages.append(continue_msg)
+                     agent._session_messages = messages
++                    agent._save_session_log(messages)
+                     continue
+ 
+                 codex_ack_continuations = 0
+@@ -4052,6 +4066,53 @@ def run_conversation(
          interrupted=interrupted,
      )
  
@@ -68,6 +493,7 @@ index 41eb2d730..3ab7b651f 100644
 +                            "object_value": c.object_value,
 +                            "requires_review": c.requires_review,
 +                            "reason": c.reason,
++                            "namespace": _namespace,
 +                        }
 +                        for c in _candidates
 +                    ],
@@ -80,6 +506,23 @@ index 41eb2d730..3ab7b651f 100644
      # Background memory/skill review — runs AFTER the response is delivered
      # so it never competes with the user's task for model attention.
      if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+diff --git a/agent/memory_provider.py b/agent/memory_provider.py
+index c9abc48c7..c4c1c9d87 100644
+--- a/agent/memory_provider.py
++++ b/agent/memory_provider.py
+@@ -77,7 +77,11 @@ class MemoryProvider(ABC):
+             per-profile provider identity scoping.
+           - agent_workspace (str): Shared workspace name (e.g. "hermes").
+           - parent_session_id (str): For subagents, the parent's session_id.
+-          - user_id (str): Platform user identifier (gateway sessions).
++          - user_id (str): Platform user identifier (gateway DM/private sessions).
++      - memory_namespace (str): Shared namespace for group/channel/thread
++        contexts. When present, providers must prefer this over user_id for
++        bank/session scoping so group replies cannot read a sender's private
++        memory bank.
+         """
+ 
+     def system_prompt_block(self) -> str:
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
 index 9c36d205a..029eb0f82 100644
 --- a/agent/prompt_builder.py
@@ -143,45 +586,614 @@ index bc29c9ef8..4d2565a1b 100644
      # ── Volatile tier (changes per session/turn — never cached) ───
      volatile_parts: List[str] = []
  
-diff --git a/hermes_cli/auth.py b/hermes_cli/auth.py
-index f21ada7db..345ca5ca7 100644
---- a/hermes_cli/auth.py
-+++ b/hermes_cli/auth.py
-@@ -319,7 +319,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
-         name="Anthropic",
-         auth_type="api_key",
-         inference_base_url="https://api.anthropic.com",
--        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
-+        api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
-         base_url_env_var="ANTHROPIC_BASE_URL",
-     ),
-     "alibaba": ProviderConfig(
-diff --git a/hermes_cli/providers.py b/hermes_cli/providers.py
-index 0017004ee..5a223e193 100644
---- a/hermes_cli/providers.py
-+++ b/hermes_cli/providers.py
-@@ -96,7 +96,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
-     ),
-     "anthropic": HermesOverlay(
-         transport="anthropic_messages",
--        extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
-+        extra_env_vars=("ANTHROPIC_TOKEN",),
-     ),
-     "zai": HermesOverlay(
-         transport="openai_chat",
-diff --git a/hermes_cli/web_server.py b/hermes_cli/web_server.py
-index 7d28ce076..ed754107f 100644
---- a/hermes_cli/web_server.py
-+++ b/hermes_cli/web_server.py
-@@ -1358,7 +1358,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
-             "has_refresh_token": bool(cc_creds.get("refreshToken")),
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+index b161b507e..9324dcd8e 100644
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -612,17 +612,27 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+                 function_result = json.dumps({"success": False, "error": format_session_db_unavailable()})
+             else:
+                 from tools.session_search_tool import session_search as _session_search
+-                function_result = _session_search(
+-                    query=function_args.get("query", ""),
+-                    role_filter=function_args.get("role_filter"),
+-                    limit=function_args.get("limit", 3),
+-                    session_id=function_args.get("session_id"),
+-                    around_message_id=function_args.get("around_message_id"),
+-                    window=function_args.get("window", 5),
+-                    sort=function_args.get("sort"),
+-                    db=session_db,
+-                    current_session_id=agent.session_id,
+-                )
++                # Built-in session_search is broad by design for private/CLI recall.
++                # In shared chats, block it until the session DB has chat/thread
++                # metadata filters; otherwise a group bot can retrieve unrelated
++                # DM/CLI transcripts and disclose private context.
++                if getattr(agent, "_shared_chat_memory_scope", False):
++                    function_result = json.dumps({
++                        "success": False,
++                        "error": "session_search is disabled in shared group/channel contexts to prevent private conversation leakage. Use group memory instead.",
++                    }, ensure_ascii=False)
++                else:
++                    function_result = _session_search(
++                        query=function_args.get("query", ""),
++                        role_filter=function_args.get("role_filter"),
++                        limit=function_args.get("limit", 3),
++                        session_id=function_args.get("session_id"),
++                        around_message_id=function_args.get("around_message_id"),
++                        window=function_args.get("window", 5),
++                        sort=function_args.get("sort"),
++                        db=session_db,
++                        current_session_id=agent.session_id,
++                    )
+             tool_duration = time.time() - tool_start_time
+             if agent._should_emit_quiet_tool_messages():
+                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+diff --git a/gateway/config.py b/gateway/config.py
+index 833269752..07b3a7d40 100644
+--- a/gateway/config.py
++++ b/gateway/config.py
+@@ -830,18 +830,20 @@ def load_gateway_config() -> GatewayConfig:
+                     bridged["require_mention"] = platform_cfg["require_mention"]
+                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
+                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
+-                if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
+-                    bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
+                 if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
+                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
++                if plat == Platform.TELEGRAM and "history_backfill" in platform_cfg:
++                    bridged["history_backfill"] = platform_cfg["history_backfill"]
++                if plat == Platform.TELEGRAM and "history_backfill_limit" in platform_cfg:
++                    bridged["history_backfill_limit"] = platform_cfg["history_backfill_limit"]
++                if plat == Platform.TELEGRAM and "context_cache_limit" in platform_cfg:
++                    bridged["context_cache_limit"] = platform_cfg["context_cache_limit"]
+                 if "free_response_channels" in platform_cfg:
+                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                 if "mention_patterns" in platform_cfg:
+                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                 if "exclusive_bot_mentions" in platform_cfg:
+                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
+-                if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
+-                    bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
+                 if "dm_policy" in platform_cfg:
+                     bridged["dm_policy"] = platform_cfg["dm_policy"]
+                 if "allow_from" in platform_cfg:
+@@ -1028,8 +1030,6 @@ def load_gateway_config() -> GatewayConfig:
+                     os.environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] = str(telegram_cfg["exclusive_bot_mentions"]).lower()
+                 if "guest_mode" in telegram_cfg and not os.getenv("TELEGRAM_GUEST_MODE"):
+                     os.environ["TELEGRAM_GUEST_MODE"] = str(telegram_cfg["guest_mode"]).lower()
+-                if "observe_unmentioned_group_messages" in telegram_cfg and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
+-                    os.environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(telegram_cfg["observe_unmentioned_group_messages"]).lower()
+                 frc = telegram_cfg.get("free_response_chats")
+                 if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
+                     if isinstance(frc, list):
+@@ -1080,7 +1080,7 @@ def load_gateway_config() -> GatewayConfig:
+                     if isinstance(group_allowed_chats, list):
+                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
+                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
+-                for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
++                for _telegram_extra_key in ("guest_mode", "disable_link_previews"):
+                     if _telegram_extra_key in telegram_cfg:
+                         plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                         if not isinstance(plat_data, dict):
+diff --git a/gateway/platforms/telegram.py b/gateway/platforms/telegram.py
+index 799a836df..e49ebe81a 100644
+--- a/gateway/platforms/telegram.py
++++ b/gateway/platforms/telegram.py
+@@ -8,15 +8,14 @@ Uses python-telegram-bot library for:
+ """
+ 
+ import asyncio
+-import dataclasses
+ import json
+ import logging
+ import os
+ import tempfile
+ import html as _html
+ import re
+-from datetime import datetime, timezone
+-from typing import Dict, List, Optional, Any
++from typing import Dict, List, Optional, Any, Deque
++from collections import deque
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -425,6 +424,7 @@ class TelegramAdapter(BasePlatformAdapter):
+         )
+         self._pending_text_batches: Dict[str, MessageEvent] = {}
+         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
++        self._recent_group_context: Dict[str, Deque[Message]] = {}
+         self._polling_error_task: Optional[asyncio.Task] = None
+         self._polling_conflict_count: int = 0
+         self._polling_network_error_count: int = 0
+@@ -4180,23 +4180,6 @@ class TelegramAdapter(BasePlatformAdapter):
+             return bool(configured)
+         return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+ 
+-    def _telegram_observe_unmentioned_group_messages(self) -> bool:
+-        """Return whether skipped unmentioned group messages are stored as context.
+-
+-        When enabled with ``require_mention``, Telegram matches the Yuanbao /
+-        OpenClaw-style group UX: observe ordinary group chatter in the session
+-        transcript, but only dispatch the agent when the bot is explicitly
+-        addressed.
+-        """
+-        configured = self.config.extra.get("observe_unmentioned_group_messages")
+-        if configured is None:
+-            configured = self.config.extra.get("ingest_unmentioned_group_messages")
+-        if configured is not None:
+-            if isinstance(configured, str):
+-                return configured.lower() in {"true", "1", "yes", "on"}
+-            return bool(configured)
+-        return os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false").lower() in {"true", "1", "yes", "on"}
+-
+     def _telegram_guest_mode(self) -> bool:
+         """Return whether non-allowlisted groups may trigger via direct @mention."""
+         configured = self.config.extra.get("guest_mode")
+@@ -4223,6 +4206,33 @@ class TelegramAdapter(BasePlatformAdapter):
+             return {str(part).strip() for part in raw if str(part).strip()}
+         return {part.strip() for part in str(raw).split(",") if part.strip()}
+ 
++    def _telegram_history_backfill(self) -> bool:
++        """Return whether group trigger messages should fetch recent chat context."""
++        configured = self.config.extra.get("history_backfill")
++        if configured is not None:
++            if isinstance(configured, str):
++                return configured.lower() in {"true", "1", "yes", "on"}
++            return bool(configured)
++        return os.getenv("TELEGRAM_HISTORY_BACKFILL", "false").lower() in {"true", "1", "yes", "on"}
++
++    def _telegram_history_backfill_limit(self) -> int:
++        raw = self.config.extra.get("history_backfill_limit")
++        if raw is None:
++            raw = os.getenv("TELEGRAM_HISTORY_BACKFILL_LIMIT", "20")
++        try:
++            return max(0, int(raw))
++        except (TypeError, ValueError):
++            return 20
++
++    def _telegram_context_cache_limit(self) -> int:
++        raw = self.config.extra.get("context_cache_limit")
++        if raw is None:
++            raw = os.getenv("TELEGRAM_CONTEXT_CACHE_LIMIT", "100")
++        try:
++            return max(0, int(raw))
++        except (TypeError, ValueError):
++            return 100
++
+     def _telegram_allowed_chats(self) -> set[str]:
+         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
+ 
+@@ -4238,30 +4248,6 @@ class TelegramAdapter(BasePlatformAdapter):
+             return {str(part).strip() for part in raw if str(part).strip()}
+         return {part.strip() for part in str(raw).split(",") if part.strip()}
+ 
+-    def _telegram_group_allowed_chats(self) -> set[str]:
+-        """Return Telegram chats authorized at group scope."""
+-        raw = self.config.extra.get("group_allowed_chats")
+-        if raw is None:
+-            raw = os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS", "")
+-        if isinstance(raw, list):
+-            return {str(part).strip() for part in raw if str(part).strip()}
+-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+-
+-    def _telegram_observe_allowed_chats(self) -> set[str]:
+-        """Chats where observed group context may use a shared source.
+-
+-        ``group_allowed_chats`` is the gateway authorization allowlist for
+-        user-less group sources.  ``allowed_chats`` remains an optional response
+-        gate; when set, observed context must satisfy both lists.
+-        """
+-        group_allowed = self._telegram_group_allowed_chats()
+-        if not group_allowed:
+-            return set()
+-        response_allowed = self._telegram_allowed_chats()
+-        if response_allowed:
+-            return group_allowed & response_allowed
+-        return group_allowed
+-
+     def _telegram_allowed_topics(self) -> set[str]:
+         """Return the whitelist of Telegram forum topic IDs this bot handles.
+ 
+@@ -4509,125 +4495,160 @@ class TelegramAdapter(BasePlatformAdapter):
+         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
+         return cleaned or text
+ 
+-    def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
+-        """Return True when a group message should be stored but not dispatched."""
+-        if not self._telegram_observe_unmentioned_group_messages():
++    def _should_capture_channel_context(self, message: Message) -> bool:
++        """Return True when this trigger should receive recent group context."""
++        if not self._telegram_history_backfill():
+             return False
+         if not self._is_group_chat(message):
+             return False
+-
+-        thread_id = getattr(message, "message_thread_id", None)
+-        allowed_topics = self._telegram_allowed_topics()
+-        if allowed_topics:
+-            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+-            if topic_id not in allowed_topics:
+-                return False
+-
+-        if thread_id is not None:
+-            try:
+-                if int(thread_id) in self._telegram_ignored_threads():
+-                    return False
+-            except (TypeError, ValueError):
+-                return False
+-
+-        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+-        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+-            return False
+-
+-        allowed = self._telegram_observe_allowed_chats()
+-        # Observed context is shared at chat/topic scope so a later trigger from
+-        # another user can see it.  Require an explicit chat allowlist; that
+-        # keeps shared observed history limited to operator-approved groups and
+-        # lets gateway authorization pass even after the shared session source
+-        # drops the per-sender user_id.
+-        if not allowed or chat_id_str not in allowed:
+-            return False
+-
+-        # Only observe messages skipped by the require_mention gate.  If the
+-        # message would be processed normally, let the dispatcher handle it;
+-        # if require_mention is disabled, every group message is a request.
+-        if chat_id_str in self._telegram_free_response_chats():
++        if getattr(message, "reply_to_message", None):
+             return False
+         if not self._telegram_require_mention():
+             return False
+-        if self._is_reply_to_bot(message):
+-            return False
+-        if self._message_mentions_bot(message):
+-            return False
+-        if self._message_matches_mention_patterns(message):
+-            return False
+-        return True
++        return self._message_mentions_bot(message) or self._message_matches_mention_patterns(message)
+ 
+-    def _telegram_group_observe_shared_source(self, source):
+-        """Return a chat/topic-scoped source for observed Telegram group context."""
+-        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
++    def _telegram_context_cache_key(self, message: Message) -> str:
++        chat = getattr(message, "chat", None)
++        chat_id = str(getattr(chat, "id", ""))
++        thread_id = getattr(message, "message_thread_id", None)
++        # Privacy boundary: cache is scoped to current chat and current topic/thread.
++        return f"{chat_id}:{thread_id if thread_id is not None else ''}"
+ 
+-    def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
+-        user_id = event.source.user_id or "unknown"
+-        sender = event.source.user_name or user_id
+-        return f"[{sender}|{user_id}]\n{event.text or ''}"
++    def _cache_group_context_message(self, message: Message) -> None:
++        """Keep a bounded in-memory context window for visible group messages.
+ 
+-    def _telegram_group_observe_channel_prompt(self) -> str:
+-        username = getattr(getattr(self, "_bot", None), "username", None) or "unknown"
+-        bot_id = getattr(getattr(self, "_bot", None), "id", None) or "unknown"
+-        return (
+-            "You are handling a Telegram group chat message.\n"
+-            f"- Your identity: user_id={bot_id}, @-mention name in this group=@{username}\n"
+-            "- Lines in history prefixed with `[nickname|user_id]` are observed Telegram group context "
+-            "and are not necessarily addressed to you.\n"
+-            "- Treat only the current new message as a request explicitly directed at you, "
+-            "and answer it directly."
+-        )
++        This records only updates Telegram already delivered to the bot. With
++        BotFather privacy mode enabled, ordinary non-command/non-mention group
++        messages are never delivered, so they cannot be cached here.
++        """
++        if not self._is_group_chat(message):
++            return
++        limit = self._telegram_context_cache_limit()
++        if limit <= 0:
++            return
++        if not self._format_history_message_for_context(message):
++            return
++        key = self._telegram_context_cache_key(message)
++        cache = self._recent_group_context.get(key)
++        if cache is None or cache.maxlen != limit:
++            cache = deque(cache or [], maxlen=limit)
++            self._recent_group_context[key] = cache
++        message_id = str(getattr(message, "message_id", ""))
++        if message_id and any(str(getattr(item, "message_id", "")) == message_id for item in cache):
++            return
++        cache.append(message)
++
++    def _fetch_cached_channel_context(self, message: Message) -> str:
++        limit = self._telegram_history_backfill_limit()
++        if limit <= 0:
++            return ""
++        cache = self._recent_group_context.get(self._telegram_context_cache_key(message))
++        if not cache:
++            return ""
++        trigger_id = str(getattr(message, "message_id", ""))
++        candidates = [item for item in cache if str(getattr(item, "message_id", "")) != trigger_id]
++        if not candidates:
++            return ""
++        candidates = candidates[-limit:]
++        lines = [self._format_history_message_for_context(item) for item in candidates]
++        lines = [line for line in lines if line]
++        if not lines:
++            return ""
++        return "[Recent visible group messages]\n" + "\n".join(lines)
++
++    @staticmethod
++    def _message_sort_key(message: Message) -> tuple[int, int]:
++        timestamp = getattr(message, "date", None)
++        ts = int(timestamp.timestamp()) if timestamp is not None else 0
++        try:
++            mid = int(getattr(message, "message_id", 0) or 0)
++        except (TypeError, ValueError):
++            mid = 0
++        return ts, mid
++
++    def _format_history_message_for_context(self, message: Message) -> Optional[str]:
++        text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
++        text = str(text).strip()
++        if not text:
++            if getattr(message, "photo", None):
++                text = "(photo)"
++            elif getattr(message, "video", None):
++                text = "(video)"
++            elif getattr(message, "document", None):
++                text = "(document)"
++            elif getattr(message, "audio", None):
++                text = "(audio)"
++            elif getattr(message, "voice", None):
++                text = "(voice)"
++            elif getattr(message, "sticker", None):
++                text = "(sticker)"
++        if not text:
++            return None
+ 
+-    def _apply_telegram_group_observe_attribution(self, event: MessageEvent) -> MessageEvent:
+-        """Align triggered group turns with observed-history attribution."""
+-        if not self._telegram_observe_unmentioned_group_messages():
+-            return event
+-        raw_message = getattr(event, "raw_message", None)
+-        if not raw_message or not self._is_group_chat(raw_message):
+-            return event
+-        chat_id_str = str(getattr(getattr(raw_message, "chat", None), "id", ""))
+-        allowed = self._telegram_observe_allowed_chats()
+-        if not allowed or chat_id_str not in allowed:
+-            return event
+-        shared_source = self._telegram_group_observe_shared_source(event.source)
+-        observe_prompt = self._telegram_group_observe_channel_prompt()
+-        channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
+-        return dataclasses.replace(
+-            event,
+-            text=self._telegram_group_observe_attributed_text(event),
+-            source=shared_source,
+-            channel_prompt=channel_prompt,
++        from_user = getattr(message, "from_user", None)
++        sender = (
++            getattr(from_user, "full_name", None)
++            or getattr(from_user, "username", None)
++            or getattr(getattr(message, "sender_chat", None), "title", None)
++            or "Unknown"
+         )
++        if from_user is not None and getattr(from_user, "is_bot", False):
++            sender = f"{sender} [bot]"
++        return f"[{sender}] {text}"
+ 
+-    def _observe_unmentioned_group_message(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> None:
+-        """Append skipped group chatter to the target session without dispatching."""
+-        store = getattr(self, "_session_store", None)
+-        if not store:
+-            return
+-        try:
+-            event = self._build_message_event(message, msg_type, update_id=update_id)
+-            shared_source = self._telegram_group_observe_shared_source(event.source)
+-            session_entry = store.get_or_create_session(shared_source)
+-            entry = {
+-                "role": "user",
+-                "content": self._telegram_group_observe_attributed_text(event),
+-                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+-                "observed": True,
+-            }
+-            if event.message_id:
+-                entry["message_id"] = str(event.message_id)
+-            store.append_to_transcript(session_entry.session_id, entry)
+-            adapter_name = getattr(self, "name", "telegram")
+-            logger.info(
+-                "[%s] Telegram group message observed (no bot trigger): chat=%s from=%s",
+-                adapter_name,
+-                getattr(getattr(message, "chat", None), "id", "unknown"),
+-                event.source.user_id or "unknown",
+-            )
+-        except Exception as exc:
+-            adapter_name = getattr(self, "name", "telegram")
+-            logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
++    def _fetch_recent_channel_context(self, message: Message) -> str:
++        """Recover a minimal same-chat/thread reply chain for context.
++
++        Telegram's bot API does not provide general-purpose backscroll like
++        Discord history(). The safe universally-available primitive is the
++        reply chain already embedded in the incoming update payload. We exploit
++        that without claiming broader history access.
++        """
++        limit = self._telegram_history_backfill_limit()
++        if limit <= 0:
++            return ""
++
++        collected: list[Message] = []
++        seen_ids: set[str] = set()
++        trigger_chat = getattr(message, "chat", None)
++        trigger_chat_id = str(getattr(trigger_chat, "id", ""))
++        trigger_thread_id = getattr(message, "message_thread_id", None)
++        current = getattr(message, "reply_to_message", None)
++
++        while current is not None and len(collected) < limit:
++            current_chat = getattr(current, "chat", None)
++            if str(getattr(current_chat, "id", "")) != trigger_chat_id:
++                break
++            if getattr(current, "message_thread_id", None) != trigger_thread_id:
++                break
++
++            current_id = str(getattr(current, "message_id", ""))
++            if current_id and current_id in seen_ids:
++                break
++            if current_id:
++                seen_ids.add(current_id)
++            collected.append(current)
++            current = getattr(current, "reply_to_message", None)
++
++        if not collected:
++            return ""
++
++        collected.sort(key=self._message_sort_key)
++        lines = [self._format_history_message_for_context(item) for item in collected]
++        lines = [line for line in lines if line]
++        if not lines:
++            return ""
++        return "[Recent replied context]\n" + "\n".join(lines)
++
++    def _build_channel_context_for_trigger(self, message: Message) -> str:
++        blocks = []
++        cached = self._fetch_cached_channel_context(message)
++        if cached:
++            blocks.append(cached)
++        replied = self._fetch_recent_channel_context(message)
++        if replied:
++            blocks.append(replied)
++        return "\n\n".join(blocks)
+ 
+     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
+         """Apply Telegram group trigger rules.
+@@ -4752,15 +4773,14 @@ class TelegramAdapter(BasePlatformAdapter):
+         msg = self._effective_update_message(update)
+         if not msg or not msg.text:
+             return
+-        if not self._should_process_message(msg):
+-            if self._should_observe_unmentioned_group_message(msg):
+-                self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
++        should_process = self._should_process_message(msg)
++        if not should_process:
++            self._cache_group_context_message(msg)
+             return
+         await self._ensure_forum_commands(update.message)
+ 
+         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+         event.text = self._clean_bot_trigger_text(event.text)
+-        event = self._apply_telegram_group_observe_attribution(event)
+         self._enqueue_text_event(event)
+ 
+     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@@ -4773,8 +4793,6 @@ class TelegramAdapter(BasePlatformAdapter):
+         await self._ensure_forum_commands(msg)
+ 
+         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
+-        event.text = self._clean_bot_trigger_text(event.text)
+-        event = self._apply_telegram_group_observe_attribution(event)
+         await self.handle_message(event)
+ 
+     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+@@ -4783,8 +4801,6 @@ class TelegramAdapter(BasePlatformAdapter):
+         if not msg:
+             return
+         if not self._should_process_message(msg):
+-            if self._should_observe_unmentioned_group_message(msg):
+-                self._observe_unmentioned_group_message(msg, MessageType.LOCATION, update_id=update.update_id)
+             return
+ 
+         venue = getattr(msg, "venue", None)
+@@ -4814,7 +4830,6 @@ class TelegramAdapter(BasePlatformAdapter):
+ 
+         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+         event.text = "\n".join(parts)
+-        event = self._apply_telegram_group_observe_attribution(event)
+         await self.handle_message(event)
+ 
+     # ------------------------------------------------------------------
+@@ -4959,23 +4974,8 @@ class TelegramAdapter(BasePlatformAdapter):
+         if not update.message:
+             return
+         if not self._should_process_message(update.message):
+-            if self._should_observe_unmentioned_group_message(update.message):
+-                _m = update.message
+-                if _m.sticker:
+-                    _observe_type = MessageType.STICKER
+-                elif _m.photo:
+-                    _observe_type = MessageType.PHOTO
+-                elif _m.video:
+-                    _observe_type = MessageType.VIDEO
+-                elif _m.audio:
+-                    _observe_type = MessageType.AUDIO
+-                elif _m.voice:
+-                    _observe_type = MessageType.VOICE
+-                else:
+-                    _observe_type = MessageType.DOCUMENT
+-                self._observe_unmentioned_group_message(_m, _observe_type, update_id=update.update_id)
+             return
+-
++        
+         msg = update.message
+         
+         # Determine media type
+@@ -5003,14 +5003,9 @@ class TelegramAdapter(BasePlatformAdapter):
+         # Handle stickers: describe via vision tool with caching
+         if msg.sticker:
+             await self._handle_sticker(msg, event)
+-            event = self._apply_telegram_group_observe_attribution(event)
+             await self.handle_message(event)
+             return
+-
+-        # Apply observe attribution after caption is set; sticker is handled above
+-        # because _handle_sticker overwrites event.text with its vision description.
+-        event = self._apply_telegram_group_observe_attribution(event)
+-
++        
+         # Download photo to local image cache so the vision tool can access it
+         # even after Telegram's ephemeral file URLs expire (~1 hour).
+         if msg.photo:
+@@ -5530,6 +5525,10 @@ class TelegramAdapter(BasePlatformAdapter):
+             message_id=str(message.message_id),
+         )
+         
++        channel_context = None
++        if self._should_capture_channel_context(message):
++            channel_context = self._build_channel_context_for_trigger(message)
++
+         # Extract reply context if this message is a reply.
+         # Prefer Telegram's native partial quote (message.quote, TextQuote)
+         # so a user replying to a single selected substring of a prior
+@@ -5573,6 +5572,7 @@ class TelegramAdapter(BasePlatformAdapter):
+             reply_to_text=reply_to_text,
+             auto_skill=topic_skill,
+             channel_prompt=_channel_prompt,
++            channel_context=channel_context,
+             timestamp=message.date,
+         )
+ 
+diff --git a/plugins/image_gen/openai/__init__.py b/plugins/image_gen/openai/__init__.py
+index c1a719f91..e07856661 100644
+--- a/plugins/image_gen/openai/__init__.py
++++ b/plugins/image_gen/openai/__init__.py
+@@ -223,7 +223,20 @@ class OpenAIImageGenProvider(ImageGenProvider):
          }
  
--    env_token = os.getenv("ANTHROPIC_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
-+    env_token = os.getenv("ANTHROPIC_TOKEN")
-     if env_token:
-         return {
-             "logged_in": True,
+         try:
+-            client = openai.OpenAI()
++            client_kwargs: Dict[str, Any] = {}
++            api_key = os.environ.get("OPENAI_API_KEY")
++            if api_key:
++                client_kwargs["api_key"] = api_key
++            cfg = _load_openai_config()
++            openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
++            base_url = os.environ.get("OPENAI_BASE_URL")
++            if not base_url and isinstance(openai_cfg, dict):
++                raw_base = openai_cfg.get("base_url")
++                if isinstance(raw_base, str) and raw_base.strip():
++                    base_url = raw_base.strip()
++            if base_url:
++                client_kwargs["base_url"] = base_url.rstrip("/")
++            client = openai.OpenAI(**client_kwargs)
+             response = client.images.generate(**payload)
+         except Exception as exc:
+             logger.debug("OpenAI image generation failed", exc_info=True)
 diff --git a/plugins/memory/hindsight/__init__.py b/plugins/memory/hindsight/__init__.py
 index 40772f79d..7c1457e7a 100644
 --- a/plugins/memory/hindsight/__init__.py
@@ -350,7 +1362,7 @@ index 65b9d32f1..7380edcb5 100644
  
  def _format_timestamp(ts: Union[int, float, str, None]) -> str:
 diff --git a/toolsets.py b/toolsets.py
-index 5de07e4c7..e50b80056 100644
+index 5de07e4c7..a00fe4caa 100644
 --- a/toolsets.py
 +++ b/toolsets.py
 @@ -48,6 +48,12 @@ _HERMES_CORE_TOOLS = [
@@ -381,500 +1393,7 @@ index 5de07e4c7..e50b80056 100644
 +        ],
 +        "includes": []
 +    },
-+
++    
      "session_search": {
          "description": "Search and recall past conversations with summarization",
          "tools": ["session_search"],
-diff --git a/gateway/config.py b/gateway/config.py
-index 833269752..06fa0ce3f 100644
---- a/gateway/config.py
-+++ b/gateway/config.py
-@@ -834,6 +834,12 @@ def load_gateway_config() -> GatewayConfig:
-                     bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
-                 if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
-                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
-+                if plat == Platform.TELEGRAM and "history_backfill" in platform_cfg:
-+                    bridged["history_backfill"] = platform_cfg["history_backfill"]
-+                if plat == Platform.TELEGRAM and "history_backfill_limit" in platform_cfg:
-+                    bridged["history_backfill_limit"] = platform_cfg["history_backfill_limit"]
-+                if plat == Platform.TELEGRAM and "context_cache_limit" in platform_cfg:
-+                    bridged["context_cache_limit"] = platform_cfg["context_cache_limit"]
-                 if "free_response_channels" in platform_cfg:
-                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
-                 if "mention_patterns" in platform_cfg:
-diff --git a/gateway/platforms/telegram.py b/gateway/platforms/telegram.py
-index 799a836df..d848245d2 100644
---- a/gateway/platforms/telegram.py
-+++ b/gateway/platforms/telegram.py
-@@ -15,8 +15,9 @@ import os
- import tempfile
- import html as _html
- import re
-+from collections import deque
- from datetime import datetime, timezone
--from typing import Dict, List, Optional, Any
-+from typing import Dict, List, Optional, Any, Deque
- 
- logger = logging.getLogger(__name__)
- 
-@@ -425,6 +426,7 @@ class TelegramAdapter(BasePlatformAdapter):
-         )
-         self._pending_text_batches: Dict[str, MessageEvent] = {}
-         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
-+        self._recent_group_context: Dict[str, Deque[Message]] = {}
-         self._polling_error_task: Optional[asyncio.Task] = None
-         self._polling_conflict_count: int = 0
-         self._polling_network_error_count: int = 0
-@@ -4223,6 +4225,33 @@ class TelegramAdapter(BasePlatformAdapter):
-             return {str(part).strip() for part in raw if str(part).strip()}
-         return {part.strip() for part in str(raw).split(",") if part.strip()}
- 
-+    def _telegram_history_backfill(self) -> bool:
-+        """Return whether group trigger messages should fetch recent chat context."""
-+        configured = self.config.extra.get("history_backfill")
-+        if configured is not None:
-+            if isinstance(configured, str):
-+                return configured.lower() in {"true", "1", "yes", "on"}
-+            return bool(configured)
-+        return os.getenv("TELEGRAM_HISTORY_BACKFILL", "false").lower() in {"true", "1", "yes", "on"}
-+
-+    def _telegram_history_backfill_limit(self) -> int:
-+        raw = self.config.extra.get("history_backfill_limit")
-+        if raw is None:
-+            raw = os.getenv("TELEGRAM_HISTORY_BACKFILL_LIMIT", "20")
-+        try:
-+            return max(0, int(raw))
-+        except (TypeError, ValueError):
-+            return 20
-+
-+    def _telegram_context_cache_limit(self) -> int:
-+        raw = self.config.extra.get("context_cache_limit")
-+        if raw is None:
-+            raw = os.getenv("TELEGRAM_CONTEXT_CACHE_LIMIT", "100")
-+        try:
-+            return max(0, int(raw))
-+        except (TypeError, ValueError):
-+            return 100
-+
-     def _telegram_allowed_chats(self) -> set[str]:
-         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
- 
-@@ -4629,6 +4658,161 @@ class TelegramAdapter(BasePlatformAdapter):
-             adapter_name = getattr(self, "name", "telegram")
-             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
- 
-+    def _should_capture_channel_context(self, message: Message) -> bool:
-+        """Return True when this trigger should receive recent group context."""
-+        if not self._telegram_history_backfill():
-+            return False
-+        if not self._is_group_chat(message):
-+            return False
-+        if getattr(message, "reply_to_message", None):
-+            return False
-+        if not self._telegram_require_mention():
-+            return False
-+        return self._message_mentions_bot(message) or self._message_matches_mention_patterns(message)
-+
-+    def _telegram_context_cache_key(self, message: Message) -> str:
-+        chat = getattr(message, "chat", None)
-+        chat_id = str(getattr(chat, "id", ""))
-+        thread_id = getattr(message, "message_thread_id", None)
-+        # Privacy boundary: cache is scoped to current chat and current topic/thread.
-+        return f"{chat_id}:{thread_id if thread_id is not None else ''}"
-+
-+    def _cache_group_context_message(self, message: Message) -> None:
-+        """Keep a bounded in-memory context window for visible group messages.
-+
-+        This records only updates Telegram already delivered to the bot. With
-+        BotFather privacy mode enabled, ordinary non-command/non-mention group
-+        messages are never delivered, so they cannot be cached here.
-+        """
-+        if not self._is_group_chat(message):
-+            return
-+        limit = self._telegram_context_cache_limit()
-+        if limit <= 0:
-+            return
-+        if not self._format_history_message_for_context(message):
-+            return
-+        key = self._telegram_context_cache_key(message)
-+        cache = self._recent_group_context.get(key)
-+        if cache is None or cache.maxlen != limit:
-+            cache = deque(cache or [], maxlen=limit)
-+            self._recent_group_context[key] = cache
-+        message_id = str(getattr(message, "message_id", ""))
-+        if message_id and any(str(getattr(item, "message_id", "")) == message_id for item in cache):
-+            return
-+        cache.append(message)
-+
-+    def _fetch_cached_channel_context(self, message: Message) -> str:
-+        limit = self._telegram_history_backfill_limit()
-+        if limit <= 0:
-+            return ""
-+        cache = self._recent_group_context.get(self._telegram_context_cache_key(message))
-+        if not cache:
-+            return ""
-+        trigger_id = str(getattr(message, "message_id", ""))
-+        candidates = [item for item in cache if str(getattr(item, "message_id", "")) != trigger_id]
-+        if not candidates:
-+            return ""
-+        candidates = candidates[-limit:]
-+        lines = [self._format_history_message_for_context(item) for item in candidates]
-+        lines = [line for line in lines if line]
-+        if not lines:
-+            return ""
-+        return "[Recent visible group messages]\n" + "\n".join(lines)
-+
-+    @staticmethod
-+    def _message_sort_key(message: Message) -> tuple[int, int]:
-+        timestamp = getattr(message, "date", None)
-+        ts = int(timestamp.timestamp()) if timestamp is not None else 0
-+        try:
-+            mid = int(getattr(message, "message_id", 0) or 0)
-+        except (TypeError, ValueError):
-+            mid = 0
-+        return ts, mid
-+
-+    def _format_history_message_for_context(self, message: Message) -> Optional[str]:
-+        text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
-+        text = str(text).strip()
-+        if not text:
-+            if getattr(message, "photo", None):
-+                text = "(photo)"
-+            elif getattr(message, "video", None):
-+                text = "(video)"
-+            elif getattr(message, "document", None):
-+                text = "(document)"
-+            elif getattr(message, "audio", None):
-+                text = "(audio)"
-+            elif getattr(message, "voice", None):
-+                text = "(voice)"
-+            elif getattr(message, "sticker", None):
-+                text = "(sticker)"
-+        if not text:
-+            return None
-+
-+        from_user = getattr(message, "from_user", None)
-+        sender = (
-+            getattr(from_user, "full_name", None)
-+            or getattr(from_user, "username", None)
-+            or getattr(getattr(message, "sender_chat", None), "title", None)
-+            or "Unknown"
-+        )
-+        if from_user is not None and getattr(from_user, "is_bot", False):
-+            sender = f"{sender} [bot]"
-+        return f"[{sender}] {text}"
-+
-+    def _fetch_recent_channel_context(self, message: Message) -> str:
-+        """Recover a minimal same-chat/thread reply chain for context.
-+
-+        Telegram's bot API does not provide general-purpose backscroll like
-+        Discord history(). The safe universally-available primitive is the
-+        reply chain already embedded in the incoming update payload. We exploit
-+        that without claiming broader history access.
-+        """
-+        limit = self._telegram_history_backfill_limit()
-+        if limit <= 0:
-+            return ""
-+
-+        collected: list[Message] = []
-+        seen_ids: set[str] = set()
-+        trigger_chat = getattr(message, "chat", None)
-+        trigger_chat_id = str(getattr(trigger_chat, "id", ""))
-+        trigger_thread_id = getattr(message, "message_thread_id", None)
-+        current = getattr(message, "reply_to_message", None)
-+
-+        while current is not None and len(collected) < limit:
-+            current_chat = getattr(current, "chat", None)
-+            if str(getattr(current_chat, "id", "")) != trigger_chat_id:
-+                break
-+            if getattr(current, "message_thread_id", None) != trigger_thread_id:
-+                break
-+
-+            current_id = str(getattr(current, "message_id", ""))
-+            if current_id and current_id in seen_ids:
-+                break
-+            if current_id:
-+                seen_ids.add(current_id)
-+            collected.append(current)
-+            current = getattr(current, "reply_to_message", None)
-+
-+        if not collected:
-+            return ""
-+
-+        collected.sort(key=self._message_sort_key)
-+        lines = [self._format_history_message_for_context(item) for item in collected]
-+        lines = [line for line in lines if line]
-+        if not lines:
-+            return ""
-+        return "[Recent replied context]\n" + "\n".join(lines)
-+
-+    def _build_channel_context_for_trigger(self, message: Message) -> str:
-+        blocks = []
-+        cached = self._fetch_cached_channel_context(message)
-+        if cached:
-+            blocks.append(cached)
-+        replied = self._fetch_recent_channel_context(message)
-+        if replied:
-+            blocks.append(replied)
-+        return "\n\n".join(blocks)
-+
-     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
-         """Apply Telegram group trigger rules.
- 
-@@ -4752,7 +4936,9 @@ class TelegramAdapter(BasePlatformAdapter):
-         msg = self._effective_update_message(update)
-         if not msg or not msg.text:
-             return
--        if not self._should_process_message(msg):
-+        should_process = self._should_process_message(msg)
-+        if not should_process:
-+            self._cache_group_context_message(msg)
-             if self._should_observe_unmentioned_group_message(msg):
-                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
-             return
-@@ -5530,6 +5716,10 @@ class TelegramAdapter(BasePlatformAdapter):
-             message_id=str(message.message_id),
-         )
-         
-+        channel_context = None
-+        if self._should_capture_channel_context(message):
-+            channel_context = self._build_channel_context_for_trigger(message)
-+
-         # Extract reply context if this message is a reply.
-         # Prefer Telegram's native partial quote (message.quote, TextQuote)
-         # so a user replying to a single selected substring of a prior
-@@ -5573,6 +5763,7 @@ class TelegramAdapter(BasePlatformAdapter):
-             reply_to_text=reply_to_text,
-             auto_skill=topic_skill,
-             channel_prompt=_channel_prompt,
-+            channel_context=channel_context,
-             timestamp=message.date,
-         )
- 
-diff --git a/tests/gateway/test_telegram_history_backfill.py b/tests/gateway/test_telegram_history_backfill.py
-new file mode 100644
-index 000000000..4dba7af7d
---- /dev/null
-+++ b/tests/gateway/test_telegram_history_backfill.py
-@@ -0,0 +1,221 @@
-+import asyncio
-+import sys
-+from pathlib import Path
-+from datetime import datetime, timezone
-+from types import SimpleNamespace
-+from unittest.mock import AsyncMock
-+
-+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-+
-+from gateway.config import Platform, PlatformConfig, load_gateway_config
-+
-+
-+def _make_adapter(*, require_mention=True, history_backfill=True, history_backfill_limit=5, bot_username="hermes_bot"):
-+    from gateway.platforms.telegram import TelegramAdapter
-+
-+    adapter = object.__new__(TelegramAdapter)
-+    adapter.platform = Platform.TELEGRAM
-+    adapter.config = PlatformConfig(
-+        enabled=True,
-+        token="***",
-+        extra={
-+            "require_mention": require_mention,
-+            "history_backfill": history_backfill,
-+            "history_backfill_limit": history_backfill_limit,
-+            "allowed_topics": [],
-+            "allowed_chats": [],
-+        },
-+    )
-+    adapter._bot = SimpleNamespace(id=999, username=bot_username)
-+    adapter._mention_patterns = []
-+    adapter._dm_topics = {}
-+    adapter._dm_topic_chat_ids = set()
-+    adapter._topic_chat_config = []
-+    adapter._recent_group_context = {}
-+    return adapter
-+
-+
-+def _entity(text, mention="@hermes_bot"):
-+    offset = text.index(mention)
-+    return [SimpleNamespace(type="mention", offset=offset, length=len(mention))]
-+
-+
-+def _msg(message_id, text, *, chat_id=-100, thread_id=None, from_name="Alice", is_bot=False, reply_to=None):
-+    return SimpleNamespace(
-+        message_id=message_id,
-+        text=text,
-+        caption=None,
-+        photo=None,
-+        video=None,
-+        document=None,
-+        audio=None,
-+        voice=None,
-+        sticker=None,
-+        quote=None,
-+        reply_to_message=reply_to,
-+        entities=[],
-+        caption_entities=[],
-+        date=datetime(2026, 1, 1, 0, 0, message_id, tzinfo=timezone.utc),
-+        message_thread_id=thread_id,
-+        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group"),
-+        from_user=SimpleNamespace(id=message_id + 1000, full_name=from_name, username=from_name.lower(), is_bot=is_bot),
-+        sender_chat=None,
-+    )
-+
-+
-+def test_reply_chain_backfill_stays_in_same_thread_and_chat():
-+    adapter = _make_adapter()
-+
-+    root = _msg(1, "first context")
-+    second = _msg(2, "second context", reply_to=root)
-+    trigger = _msg(3, "@hermes_bot help", reply_to=second)
-+    trigger.entities = _entity(trigger.text)
-+
-+    assert adapter._should_capture_channel_context(trigger) is False
-+
-+    text = adapter._fetch_recent_channel_context(trigger)
-+    assert text.startswith("[Recent replied context]\n")
-+    assert "[Alice] first context" in text
-+    assert "[Alice] second context" in text
-+
-+
-+def test_backfill_ignores_cross_thread_messages():
-+    adapter = _make_adapter()
-+
-+    wrong_thread = _msg(1, "other thread", thread_id=99)
-+    trigger = _msg(2, "@hermes_bot help", thread_id=7, reply_to=wrong_thread)
-+    trigger.entities = _entity(trigger.text)
-+
-+    text = adapter._fetch_recent_channel_context(trigger)
-+    assert text == ""
-+
-+
-+def test_build_message_event_includes_channel_context_when_enabled():
-+    adapter = _make_adapter()
-+
-+    trigger = _msg(3, "@hermes_bot summarize")
-+    trigger.entities = _entity(trigger.text)
-+
-+    original_fetch = adapter._build_channel_context_for_trigger
-+
-+    def fake_build(message):
-+        assert message is trigger
-+        return "[Recent replied context]\n[Alice] older note\n[Alice] latest note"
-+
-+    adapter._build_channel_context_for_trigger = fake_build
-+    event = adapter._build_message_event(trigger, __import__("gateway.platforms.base", fromlist=["MessageType"]).MessageType.TEXT)
-+    adapter._build_channel_context_for_trigger = original_fetch
-+
-+    assert event.channel_context == "[Recent replied context]\n[Alice] older note\n[Alice] latest note"
-+
-+
-+def test_cache_ignored_visible_group_messages_for_next_trigger():
-+    adapter = _make_adapter(history_backfill_limit=2)
-+
-+    ignored_1 = _msg(1, "plain context 1", from_name="Alice")
-+    ignored_2 = _msg(2, "plain context 2", from_name="Bob")
-+    trigger = _msg(3, "@hermes_bot summarize", from_name="Carol")
-+    trigger.entities = _entity(trigger.text)
-+
-+    assert adapter._should_process_message(ignored_1) is False
-+    adapter._cache_group_context_message(ignored_1)
-+    assert adapter._should_process_message(ignored_2) is False
-+    adapter._cache_group_context_message(ignored_2)
-+
-+    event = adapter._build_message_event(trigger, __import__("gateway.platforms.base", fromlist=["MessageType"]).MessageType.TEXT)
-+
-+    assert event.channel_context == "[Recent visible group messages]\n[Alice] plain context 1\n[Bob] plain context 2"
-+
-+
-+def test_cached_context_stays_scoped_to_thread():
-+    adapter = _make_adapter(history_backfill_limit=5)
-+
-+    adapter._cache_group_context_message(_msg(1, "topic A", thread_id=10))
-+    adapter._cache_group_context_message(_msg(2, "topic B", thread_id=20))
-+    trigger = _msg(3, "@hermes_bot summarize", thread_id=10)
-+    trigger.entities = _entity(trigger.text)
-+
-+    event = adapter._build_message_event(trigger, __import__("gateway.platforms.base", fromlist=["MessageType"]).MessageType.TEXT)
-+
-+    assert "topic A" in event.channel_context
-+    assert "topic B" not in event.channel_context
-+
-+
-+def test_build_message_event_skips_channel_context_when_history_backfill_disabled():
-+    adapter = _make_adapter(history_backfill=False)
-+    trigger = _msg(1, "@hermes_bot ping")
-+    trigger.entities = _entity(trigger.text)
-+
-+    event = adapter._build_message_event(trigger, __import__("gateway.platforms.base", fromlist=["MessageType"]).MessageType.TEXT)
-+    assert event.channel_context is None
-+
-+
-+def test_config_yaml_bridges_telegram_history_backfill_to_platform_extra(tmp_path, monkeypatch):
-+    hermes_home = tmp_path / "hermes"
-+    hermes_home.mkdir()
-+    (hermes_home / "config.yaml").write_text(
-+        """
-+telegram:
-+  enabled: true
-+  token: test-token
-+  require_mention: true
-+  history_backfill: true
-+  history_backfill_limit: 7
-+  context_cache_limit: 11
-+""".strip(),
-+        encoding="utf-8",
-+    )
-+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-+    for key in [
-+        "TELEGRAM_REQUIRE_MENTION",
-+        "TELEGRAM_HISTORY_BACKFILL",
-+        "TELEGRAM_HISTORY_BACKFILL_LIMIT",
-+        "TELEGRAM_CONTEXT_CACHE_LIMIT",
-+    ]:
-+        monkeypatch.delenv(key, raising=False)
-+
-+    config = load_gateway_config()
-+    telegram = config.platforms[Platform.TELEGRAM]
-+
-+    assert telegram.enabled is True
-+    assert telegram.extra["require_mention"] is True
-+    assert telegram.extra["history_backfill"] is True
-+    assert telegram.extra["history_backfill_limit"] == 7
-+    assert telegram.extra["context_cache_limit"] == 11
-+
-+
-+def test_text_handler_caches_visible_ignored_group_message_then_injects_on_trigger():
-+    """End-to-end adapter flow for privacy-mode-off group messages.
-+
-+    This simulates Telegram delivering an ordinary group message to the bot
-+    (which only happens when BotFather privacy mode is disabled). Hermes still
-+    ignores it because require_mention is enabled, but the adapter keeps it in
-+    the bounded same-chat/thread context cache. The next explicit @bot trigger
-+    is enqueued with that context in MessageEvent.channel_context.
-+    """
-+    adapter = _make_adapter(history_backfill=True, history_backfill_limit=5)
-+    adapter._ensure_forum_commands = AsyncMock()
-+    captured_events = []
-+    adapter._enqueue_text_event = captured_events.append
-+
-+    visible_plain = _msg(10, "普通群消息：刚才讨论了A方案", from_name="Alice")
-+    trigger = _msg(11, "@hermes_bot 总结一下", from_name="Bob")
-+    trigger.entities = _entity(trigger.text)
-+
-+    asyncio.run(adapter._handle_text_message(
-+        SimpleNamespace(effective_message=visible_plain, message=visible_plain, update_id=1001),
-+        SimpleNamespace(),
-+    ))
-+    assert captured_events == []
-+    assert adapter._fetch_cached_channel_context(trigger) == "[Recent visible group messages]\n[Alice] 普通群消息：刚才讨论了A方案"
-+
-+    asyncio.run(adapter._handle_text_message(
-+        SimpleNamespace(effective_message=trigger, message=trigger, update_id=1002),
-+        SimpleNamespace(),
-+    ))
-+
-+    assert len(captured_events) == 1
-+    event = captured_events[0]
-+    assert event.text == "总结一下"
-+    assert event.channel_context == "[Recent visible group messages]\n[Alice] 普通群消息：刚才讨论了A方案"
-+    adapter._ensure_forum_commands.assert_awaited_once_with(trigger)

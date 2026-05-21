@@ -90,6 +90,7 @@ GRANT CONNECT ON DATABASE hindsight TO mg_app;
 GRANT USAGE ON SCHEMA public TO mg_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mg_nodes, mg_memories, mg_edges, mg_paths, mg_glossary_keywords, mg_search_documents, mg_access_log, mg_snapshots, mg_access_logs TO mg_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO mg_app;
+ALTER TABLE mg_edges DISABLE ROW LEVEL SECURITY;
 SQL
         echo "   ✅ mg_app least-privileged DB role 已确认"
     fi

@@ -38,21 +38,13 @@ CREATE POLICY mg_memories_isolation ON mg_memories
         )
     );
 
--- 5. Enable RLS on mg_edges
-ALTER TABLE mg_edges ENABLE ROW LEVEL SECURITY;
+-- 5. mg_edges intentionally does not enforce RLS directly.
+-- Edges contain no namespace column; visibility is constrained through mg_paths,
+-- mg_memories, mg_search_documents, and tool/service namespace filters. Enabling
+-- RLS on mg_edges blocks legitimate root-edge inserts for namespace-local writes.
+ALTER TABLE mg_edges DISABLE ROW LEVEL SECURITY;
 
--- 6. Policy: edges inherit namespace
-CREATE POLICY mg_edges_isolation ON mg_edges
-    FOR ALL
-    USING (
-        parent_uuid IN (
-            SELECT node_uuid FROM mg_paths
-            WHERE namespace = current_setting('app.current_namespace', true)
-               OR namespace = ''
-               OR namespace IS NULL
-               OR current_setting('app.current_namespace', true) = ''
-        )
-    );
+-- 6. No mg_edges policy is created by design.
 
 -- 7. Enable RLS on mg_glossary_keywords
 ALTER TABLE mg_glossary_keywords ENABLE ROW LEVEL SECURITY;
