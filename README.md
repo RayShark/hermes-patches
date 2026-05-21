@@ -147,6 +147,20 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 - toolsets.py 记忆工具集定义
 - Telegram 群聊 visible-but-ignored context window：privacy mode 关闭后，普通群消息虽被 `require_mention` 忽略，也会进入短期同群/同 topic 缓存；下一次 @bot 时通过 `MessageEvent.channel_context` 注入。不是 Bot API 全量历史回填，Telegram 未送达的消息仍无法恢复。
 
+#### Telegram 群上下文配置
+
+```yaml
+telegram:
+  require_mention: true
+  history_backfill: true          # 开启同群/同 topic 短期上下文注入；默认 false
+  history_backfill_limit: 20      # 每次触发最多注入多少条；默认 20，0=关闭注入
+  context_cache_limit: 100        # 每个 chat/topic 在内存中最多保留多少条可见消息；默认 100，0=关闭缓存
+```
+
+环境变量等价项：`TELEGRAM_HISTORY_BACKFILL`、`TELEGRAM_HISTORY_BACKFILL_LIMIT`、`TELEGRAM_CONTEXT_CACHE_LIMIT`。
+
+边界：这只缓存 Telegram 已经投递给 bot 的群消息。若 BotFather privacy mode 开着，普通群消息不会送达 bot，本补丁无法也不会伪造“历史回填”。缓存只在当前 gateway 进程内有效，并按 chat ID + topic/thread ID 隔离。
+
 ## 配置文件
 
 - `memory_policy.default.yaml` — Memory Metacognition 策略配置模板
