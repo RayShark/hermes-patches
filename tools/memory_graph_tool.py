@@ -107,6 +107,18 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+
+def _refresh_search_index(node_uuid: str, namespace: str) -> None:
+    """Best-effort sync of derived Memory Graph search rows after tool writes."""
+    if not node_uuid:
+        return
+    try:
+        _ensure_db()
+        from agent.memory_graph.services.search import SearchIndexer
+        _run(SearchIndexer().refresh_search_documents_for_node(node_uuid, namespace=namespace))
+    except Exception as exc:
+        logger.warning("Failed to refresh Memory Graph search index for %s: %s", node_uuid, exc)
+
 def _parse_uri(uri: str, default_domain: str = "core"):
     if "://" in uri:
         domain, path = uri.split("://", 1)
@@ -149,6 +161,7 @@ def _create(args, **kw):
         parent_path, content, priority=args.get("priority", 0),
         title=args.get("title") or None, domain=domain, namespace=ns,
     ))
+    _refresh_search_index(result.get("node_uuid", ""), ns)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
@@ -162,6 +175,7 @@ def _update(args, **kw):
         path, args["content"], domain=domain, namespace=ns,
         priority=args.get("priority"),
     ))
+    _refresh_search_index(result.get("node_uuid", ""), ns)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
@@ -171,7 +185,11 @@ def _delete(args, **kw):
     uri = args.get("uri", "")
     domain, path = _parse_uri(uri, args.get("domain", "core"))
     ns = args.get("namespace") or _get_namespace()
+    node = _run(GraphService().get_memory_by_path(path, domain=domain, namespace=ns))
+    node_uuid = (node or {}).get("node_uuid", "")
     result = _run(GraphService().delete_memory(path, domain=domain, namespace=ns))
+    if node_uuid:
+        _refresh_search_index(node_uuid, ns)
     return json.dumps({"deleted": result, "uri": f"{domain}://{path}"})
 
 
@@ -219,6 +237,7 @@ def _alias(args, **kw):
     alias_domain, alias_path = _parse_uri(alias_uri, domain)
     ns = args.get("namespace") or _get_namespace()
     result = _run(GraphService().add_alias(path, alias_path, domain=domain, alias_domain=alias_domain, namespace=ns))
+    _refresh_search_index(result.get("node_uuid", ""), ns)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
@@ -233,6 +252,7 @@ def _glossary_add(args, **kw):
     if not node:
         return json.dumps({"error": f"Node not found: {domain}://{path}"})
     result = _run(GlossaryService().add_keyword(args["keyword"], node["node_uuid"], namespace=ns))
+    _refresh_search_index(node.get("node_uuid", ""), ns)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 

@@ -8,27 +8,29 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES_DIR="$SCRIPT_DIR"
 HERMES_DIR="${HERMES_HOME:-$HOME/.hermes/hermes-agent}"
 
-echo "🔧 Hermes 社区补丁合集 v16"
-echo "   适配版本：v0.14.0+ (v2026.5.16+) + upstream ca192cfb7"
+echo "🔧 Hermes 社区补丁合集 v17"
+echo "   适配版本：v0.14.0+ (v2026.5.16+) + upstream ba9964ff0"
 echo "   补丁目录：$PATCHES_DIR"
 echo "   Hermes目录：$HERMES_DIR"
 echo ""
 
-# 1. Apply combined patch
-PATCH_FILE="$PATCHES_DIR/combined-final-v16.patch"
-if [ -f "$PATCH_FILE" ]; then
-    echo "📦 应用 combined-final-v16.patch..."
+# 1. Apply optional combined patch if it exists and is non-empty.
+# Overlay copies below are authoritative because upstream moves quickly and large
+# git patches are brittle after `hermes update`.
+PATCH_FILE="$PATCHES_DIR/combined-final-v17.patch"
+if [ -s "$PATCH_FILE" ]; then
+    echo "📦 尝试应用 combined-final-v17.patch..."
     cd "$HERMES_DIR"
     if git apply --check "$PATCH_FILE" 2>/dev/null; then
         git apply "$PATCH_FILE"
-        echo "   ✅ 补丁已应用"
+        echo "   ✅ combined patch 已应用"
     else
-        echo "   ⏭️ 补丁已应用或有冲突，跳过"
+        echo "   ⏭️ combined patch 不兼容，使用 overlay 文件复制"
     fi
 fi
 
-# 2. Copy agent modules
-for module in memory_metacognition.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py request_context.py; do
+# 2. Copy agent modules / patched core files
+for module in memory_metacognition.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py request_context.py agent_init.py agent_runtime_helpers.py conversation_loop.py memory_provider.py tool_executor.py; do
     if [ -f "$PATCHES_DIR/agent/$module" ]; then
         cp "$PATCHES_DIR/agent/$module" "$HERMES_DIR/agent/"
         echo "   ✅ agent/$module 已复制"
@@ -43,10 +45,31 @@ if [ -d "$PATCHES_DIR/agent/memory_graph" ]; then
     echo "   ✅ agent/memory_graph 已复制"
 fi
 
-# 3. Copy tools
-if [ -f "$PATCHES_DIR/tools/memory_graph_tool.py" ]; then
-    cp "$PATCHES_DIR/tools/memory_graph_tool.py" "$HERMES_DIR/tools/"
-    echo "   ✅ memory_graph_tool.py 已复制"
+# 3. Copy tools and DB/session state files
+for tool_file in memory_graph_tool.py session_search_tool.py; do
+    if [ -f "$PATCHES_DIR/tools/$tool_file" ]; then
+        cp "$PATCHES_DIR/tools/$tool_file" "$HERMES_DIR/tools/"
+        echo "   ✅ tools/$tool_file 已复制"
+    fi
+done
+if [ -f "$PATCHES_DIR/hermes_state.py" ]; then
+    cp "$PATCHES_DIR/hermes_state.py" "$HERMES_DIR/hermes_state.py"
+    echo "   ✅ hermes_state.py 已复制"
+fi
+if [ -f "$PATCHES_DIR/gateway/config.py" ]; then
+    mkdir -p "$HERMES_DIR/gateway"
+    cp "$PATCHES_DIR/gateway/config.py" "$HERMES_DIR/gateway/config.py"
+    echo "   ✅ gateway/config.py 已复制"
+fi
+if [ -f "$PATCHES_DIR/gateway/platforms/telegram.py" ]; then
+    mkdir -p "$HERMES_DIR/gateway/platforms"
+    cp "$PATCHES_DIR/gateway/platforms/telegram.py" "$HERMES_DIR/gateway/platforms/telegram.py"
+    echo "   ✅ gateway/platforms/telegram.py 已复制"
+fi
+if [ -f "$PATCHES_DIR/plugins/image_gen/openai/__init__.py" ]; then
+    mkdir -p "$HERMES_DIR/plugins/image_gen/openai"
+    cp "$PATCHES_DIR/plugins/image_gen/openai/__init__.py" "$HERMES_DIR/plugins/image_gen/openai/__init__.py"
+    echo "   ✅ OpenAI image_gen provider 已复制"
 fi
 
 # 3b. Copy patched Hindsight provider and site-package hotfixes
