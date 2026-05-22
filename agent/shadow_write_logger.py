@@ -36,7 +36,7 @@ def log_shadow_write(
         "actually_written": False,
         "mode": mode,
     }
-    
+
     for c in candidates:
         write_action = {
             "memory_type": c.get("memory_type", "unknown"),
@@ -51,27 +51,27 @@ def log_shadow_write(
             "dedup_key": c.get("dedup_key", ""),
         }
         entry["candidate_writes"].append(write_action)
-        
+
         target = c.get("target_store", "ignore")
         importance = c.get("importance", 0)
-        
+
         if target == "review" or c.get("requires_review"):
             entry["would_review"] = True
         elif target == "ignore" or importance < 0.40:
             entry["would_ignore"] = True
         elif importance >= 0.40:
             entry["would_write"] = True
-    
+
     # Append to daily log file
     date_str = datetime.now().strftime("%Y-%m-%d")
     log_file = os.path.join(_SHADOW_LOG_DIR, f"shadow_{date_str}.jsonl")
-    
+
     with open(log_file, "a") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    
+
     logger.debug("Shadow write logged: %d candidates, would_write=%s",
                  len(candidates), entry["would_write"])
-    
+
     return entry
 
 
@@ -80,14 +80,14 @@ def generate_readback_queries(candidate: Dict[str, Any]) -> List[str]:
     subject = candidate.get("subject", "")
     predicate = candidate.get("predicate", "")
     obj = candidate.get("object_value", "")
-    
+
     queries = []
-    
+
     if subject and predicate:
         queries.append(f"{subject} {predicate}")
     if subject and obj:
         queries.append(f"{subject} {obj[:20]}")
-    
+
     # Type-specific queries
     mtype = candidate.get("memory_type", "")
     if mtype == "user_fact":
@@ -105,7 +105,7 @@ def generate_readback_queries(candidate: Dict[str, Any]) -> List[str]:
     elif mtype == "rule":
         queries.append(f"操作规则")
         queries.append(f"注意事项")
-    
+
     return queries[:3]  # Max 3 queries
 
 
@@ -113,24 +113,24 @@ def get_shadow_stats(date_str: Optional[str] = None) -> Dict[str, Any]:
     """Get comprehensive shadow write statistics for a date."""
     if not date_str:
         date_str = datetime.now().strftime("%Y-%m-%d")
-    
+
     log_file = os.path.join(_SHADOW_LOG_DIR, f"shadow_{date_str}.jsonl")
     if not os.path.exists(log_file):
         return {"date": date_str, "entries": 0}
-    
+
     entries = []
     with open(log_file) as f:
         for line in f:
             line = line.strip()
             if line:
                 entries.append(json.loads(line))
-    
+
     # Aggregate statistics
     total_candidates = sum(len(e.get("candidate_writes", [])) for e in entries)
     would_write = sum(1 for e in entries if e.get("would_write"))
     would_review = sum(1 for e in entries if e.get("would_review"))
     would_ignore = sum(1 for e in entries if e.get("would_ignore"))
-    
+
     by_type = {}
     by_target = {}
     importance_scores = []
@@ -141,45 +141,45 @@ def get_shadow_stats(date_str: Optional[str] = None) -> Dict[str, Any]:
     unknown_namespace = 0
     core_write_attempts = 0
     md_write_attempts = 0
-    
+
     seen_dedup_keys = set()
-    
+
     for e in entries:
         ns = e.get("namespace", "")
         if not ns or ns == "":
             unknown_namespace += 1
-        
+
         for c in e.get("candidate_writes", []):
             mtype = c.get("memory_type", "unknown")
             target = c.get("target_store", "ignore")
             importance = c.get("importance_score", 0)
-            
+
             by_type[mtype] = by_type.get(mtype, 0) + 1
             by_target[target] = by_target.get(target, 0) + 1
             importance_scores.append(importance)
-            
+
             if importance >= 0.85:
                 high_confidence += 1
             elif importance < 0.50:
                 low_confidence += 1
-            
+
             # Dedup check
             dedup_key = c.get("dedup_key", "")
             if dedup_key:
                 if dedup_key in seen_dedup_keys:
                     duplicate_candidates += 1
                 seen_dedup_keys.add(dedup_key)
-            
+
             # Core write check
             if target == "memory_graph" and "core://" in c.get("target_path", ""):
                 core_write_attempts += 1
-            
+
             # MD write check
             if target == "memory_md":
                 md_write_attempts += 1
-    
+
     avg_importance = sum(importance_scores) / len(importance_scores) if importance_scores else 0
-    
+
     # Generate readback queries for top candidates
     readback_candidates = []
     for e in entries:
@@ -192,7 +192,7 @@ def get_shadow_stats(date_str: Optional[str] = None) -> Dict[str, Any]:
                     "readback_queries": queries,
                     "target_path": c.get("target_path"),
                 })
-    
+
     return {
         "date": date_str,
         "entries": len(entries),

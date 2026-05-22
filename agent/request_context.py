@@ -20,7 +20,7 @@ class RequestContext:
     namespace: str = ""
     session_id: str = ""
     is_admin: bool = False
-    
+
     @property
     def effective_namespace(self) -> str:
         """Get the namespace to use for writes. Never returns empty for user data."""
@@ -66,7 +66,7 @@ def is_user_private_path(path: str) -> bool:
 
 def require_namespace_for_path(path: str) -> str:
     """Get namespace for a path, raising if user data has no namespace.
-    
+
     Zero-default principle: user data MUST have namespace.
     """
     if is_user_private_path(path):
@@ -74,7 +74,7 @@ def require_namespace_for_path(path: str) -> str:
         if not ns:
             raise ValueError(
                 f"Cannot write user data to path '{path}': no namespace set. "
-                f"User data requires namespace (e.g. 'telegram:7359770766'). "
+                f"User data requires namespace (e.g. 'telegram:<chat_id>'). "
                 f"Configure default_terminal_user in config.yaml."
             )
         return ns

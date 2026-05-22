@@ -1,5 +1,5 @@
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index 512e7a471..fdb64e668 100644
+index 512e7a471..fccf1b93d 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
 @@ -271,6 +271,35 @@ def init_agent(
@@ -38,18 +38,156 @@ index 512e7a471..fdb64e668 100644
      # Pluggable print function — CLI replaces this with _cprint so that
      # raw ANSI status lines are routed through prompt_toolkit's renderer
      # instead of going directly to stdout where patch_stdout's StdoutProxy
-@@ -704,6 +733,10 @@ def init_agent(
-                 client_kwargs["default_headers"] = {
-                     "User-Agent": "claude-code/0.1.0",
-                 }
-+            elif base_url_host_matches(effective_base, "gw2.oops.asia"):
-+                client_kwargs["default_headers"] = {
-+                    "User-Agent": "curl/8.0",
-+                }
-             elif base_url_host_matches(effective_base, "portal.qwen.ai"):
-                 client_kwargs["default_headers"] = _ra()._qwen_portal_headers()
-             elif base_url_host_matches(effective_base, "chatgpt.com"):
-@@ -1044,6 +1077,14 @@ def init_agent(
+@@ -402,7 +431,7 @@ def init_agent(
+     agent.status_callback = status_callback
+     agent.tool_gen_callback = tool_gen_callback
+ 
+-    
++
+     # Tool execution state — allows _vprint during tool execution
+     # even when stream consumers are registered (no tokens streaming then)
+     agent._executing_tools = False
+@@ -435,12 +464,12 @@ def init_agent(
+     # their tids explicitly.
+     agent._tool_worker_threads: set[int] = set()
+     agent._tool_worker_threads_lock = threading.Lock()
+-    
++
+     # Subagent delegation state
+     agent._delegate_depth = 0        # 0 = top-level agent, incremented for children
+     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
+     agent._active_children_lock = threading.Lock()
+-    
++
+     # Store OpenRouter provider preferences
+     agent.providers_allowed = providers_allowed
+     agent.providers_ignored = providers_ignored
+@@ -453,7 +482,7 @@ def init_agent(
+     # Store toolset filtering options
+     agent.enabled_toolsets = enabled_toolsets
+     agent.disabled_toolsets = disabled_toolsets
+-    
++
+     # Model response configuration
+     agent.max_tokens = max_tokens  # None = use model default
+     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+@@ -461,7 +490,7 @@ def init_agent(
+     agent.request_overrides = dict(request_overrides or {})
+     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+     agent._force_ascii_payload = False
+-    
++
+     # Anthropic prompt caching: auto-enabled for Claude models on native
+     # Anthropic, OpenRouter, and third-party gateways that speak the
+     # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
+@@ -533,7 +562,7 @@ def init_agent(
+         # console. Any future noise reduction belongs at the
+         # handler level inside hermes_logging.py, not here.
+         pass
+-    
++
+     # Internal stream callback (set during streaming TTS).
+     # Initialized here so _vprint can reference it before run_conversation.
+     agent._stream_callback = None
+@@ -809,7 +838,7 @@ def init_agent(
+                         "select a provider, or run `hermes setup` for first-time "
+                         "configuration."
+                     )
+-        
++
+         agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+ 
+         # Enable fine-grained tool streaming for Claude on OpenRouter.
+@@ -853,7 +882,7 @@ def init_agent(
+                     print("⚠️  Warning: API key appears invalid or missing")
+         except Exception as e:
+             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+-    
++
+     # Provider fallback chain — ordered list of backup providers tried
+     # when the primary is exhausted (rate-limit, overload, connection
+     # failure).  Supports both legacy single-dict ``fallback_model`` and
+@@ -885,7 +914,7 @@ def init_agent(
+         disabled_toolsets=disabled_toolsets,
+         quiet_mode=agent.quiet_mode,
+     )
+-    
++
+     # Show tool configuration and store valid tool names for validation
+     agent.valid_tool_names = set()
+     if agent.tools:
+@@ -918,16 +947,16 @@ def init_agent(
+         missing_reqs = [name for name, available in requirements.items() if not available]
+         if missing_reqs:
+             print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
+-    
++
+     # Show trajectory saving status
+     if agent.save_trajectories and not agent.quiet_mode:
+         print("📝 Trajectory saving enabled")
+-    
++
+     # Show ephemeral system prompt status
+     if agent.ephemeral_system_prompt and not agent.quiet_mode:
+         prompt_preview = agent.ephemeral_system_prompt[:60] + "..." if len(agent.ephemeral_system_prompt) > 60 else agent.ephemeral_system_prompt
+         print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
+-    
++
+     # Show prompt caching status
+     if agent._use_prompt_caching and not agent.quiet_mode:
+         if agent._use_native_cache_layout and agent.provider == "anthropic":
+@@ -937,7 +966,7 @@ def init_agent(
+         else:
+             source = "Claude via OpenRouter"
+         print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
+-    
++
+     # Session logging setup - auto-save conversation trajectories for debugging
+     agent.session_start = datetime.now()
+     if session_id:
+@@ -979,15 +1008,15 @@ def init_agent(
+         pass
+     # logs_dir is retained unconditionally for request_dump_*.json (debug
+     # breadcrumb path written by agent_runtime_helpers.dump_api_request_debug).
+-    
++
+     # Track conversation messages for session logging
+     agent._session_messages: List[Dict[str, Any]] = []
+     agent._memory_write_origin = "assistant_tool"
+     agent._memory_write_context = "foreground"
+-    
++
+     # Cached system prompt -- built once per session, only rebuilt on compression
+     agent._cached_system_prompt: Optional[str] = None
+-    
++
+     # Filesystem checkpoint manager (transparent — not a tool)
+     from tools.checkpoint_manager import CheckpointManager
+     agent._checkpoint_mgr = CheckpointManager(
+@@ -996,7 +1025,7 @@ def init_agent(
+         max_total_size_mb=checkpoint_max_total_size_mb,
+         max_file_size_mb=checkpoint_max_file_size_mb,
+     )
+-    
++
+     # SQLite session store (optional -- provided by CLI or gateway)
+     agent._session_db = session_db
+     agent._parent_session_id = parent_session_id
+@@ -1007,11 +1036,11 @@ def init_agent(
+         "reasoning_config": reasoning_config,
+         "max_tokens": max_tokens,
+     }
+-    
++
+     # In-memory todo list for task planning (one per agent/session)
+     from tools.todo_tool import TodoStore
+     agent._todo_store = TodoStore()
+-    
++
+     # Load config once for memory, skills, and compression sections
+     try:
+         from hermes_cli.config import load_config as _load_agent_config
+@@ -1044,6 +1073,14 @@ def init_agent(
              agent._memory_enabled = mem_config.get("memory_enabled", False)
              agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
              agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -64,7 +202,16 @@ index 512e7a471..fdb64e668 100644
              if agent._memory_enabled or agent._user_profile_enabled:
                  from tools.memory_tool import MemoryStore
                  agent._memory_store = MemoryStore(
-@@ -1086,10 +1127,19 @@ def init_agent(
+@@ -1053,7 +1090,7 @@ def init_agent(
+                 agent._memory_store.load_from_disk()
+         except Exception:
+             pass  # Memory is optional -- don't break agent init
+-    
++
+ 
+ 
+     # Memory provider plugin (external — one at a time, alongside built-in)
+@@ -1086,10 +1123,19 @@ def init_agent(
                                  _init_kwargs["session_title"] = _st
                          except Exception:
                              pass
@@ -87,10 +234,247 @@ index 512e7a471..fdb64e668 100644
                          _init_kwargs["user_name"] = agent._user_name
                      if agent._chat_id:
                          _init_kwargs["chat_id"] = agent._chat_id
+@@ -1509,7 +1555,7 @@ def init_agent(
+     agent.session_estimated_cost_usd = 0.0
+     agent.session_cost_status = "unknown"
+     agent.session_cost_source = "none"
+-    
++
+     # ── Ollama num_ctx injection ──
+     # Ollama defaults to 2048 context regardless of the model's capabilities.
+     # When running against an Ollama server, detect the model's max context
 diff --git a/agent/agent_runtime_helpers.py b/agent/agent_runtime_helpers.py
-index b98fe4b44..a08db2fb6 100644
+index b98fe4b44..4e9bb83ef 100644
 --- a/agent/agent_runtime_helpers.py
 +++ b/agent/agent_runtime_helpers.py
+@@ -57,12 +57,12 @@ def _ra():
+ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
+     """
+     Convert internal message format to trajectory format for saving.
+-    
++
+     Args:
+         messages (List[Dict]): Internal message history
+         user_query (str): Original user query
+         completed (bool): Whether the conversation completed successfully
+-        
++
+     Returns:
+         List[Dict]: Messages in trajectory format
+     """
+@@ -71,7 +71,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
+     # embedding ~1MB base64 blobs into every saved trajectory.
+     messages = [_trajectory_normalize_msg(m) for m in messages]
+     trajectory = []
+-    
++
+     # Add system message with tool definitions
+     system_msg = (
+         "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
+@@ -86,42 +86,42 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
+         "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
+         "Example:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
+     )
+-    
++
+     trajectory.append({
+         "from": "system",
+         "value": system_msg
+     })
+-    
++
+     # Add the actual user prompt (from the dataset) as the first human message
+     trajectory.append({
+         "from": "human",
+         "value": user_query
+     })
+-    
++
+     # Skip the first message (the user query) since we already added it above.
+     # Prefill messages are injected at API-call time only (not in the messages
+     # list), so no offset adjustment is needed here.
+     i = 1
+-    
++
+     while i < len(messages):
+         msg = messages[i]
+-        
++
+         if msg["role"] == "assistant":
+             # Check if this message has tool calls
+             if "tool_calls" in msg and msg["tool_calls"]:
+                 # Format assistant message with tool calls
+                 # Add <think> tags around reasoning for trajectory storage
+                 content = ""
+-                
++
+                 # Prepend reasoning in <think> tags if available (native thinking tokens)
+                 if msg.get("reasoning") and msg["reasoning"].strip():
+                     content = f"<think>\n{msg['reasoning']}\n</think>\n"
+-                
++
+                 if msg.get("content") and msg["content"].strip():
+                     # Convert any <REASONING_SCRATCHPAD> tags to <think> tags
+                     # (used when native thinking is disabled and model reasons via XML)
+                     content += convert_scratchpad_to_think(msg["content"]) + "\n"
+-                
++
+                 # Add tool calls wrapped in XML tags
+                 for tool_call in msg["tool_calls"]:
+                     if not tool_call or not isinstance(tool_call, dict): continue
+@@ -134,23 +134,23 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
+                         # but if it does, log warning and use empty dict
+                         logging.warning(f"Unexpected invalid JSON in trajectory conversion: {tool_call['function']['arguments'][:100]}")
+                         arguments = {}
+-                    
++
+                     tool_call_json = {
+                         "name": tool_call["function"]["name"],
+                         "arguments": arguments
+                     }
+                     content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
+-                
++
+                 # Ensure every gpt turn has a <think> block (empty if no reasoning)
+                 # so the format is consistent for training data
+                 if "<think>" not in content:
+                     content = "<think>\n</think>\n" + content
+-                
++
+                 trajectory.append({
+                     "from": "gpt",
+                     "value": content.rstrip()
+                 })
+-                
++
+                 # Collect all subsequent tool responses
+                 tool_responses = []
+                 j = i + 1
+@@ -158,7 +158,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
+                     tool_msg = messages[j]
+                     # Format tool response with XML tags
+                     tool_response = "<tool_response>\n"
+-                    
++
+                     # Try to parse tool content as JSON if it looks like JSON
+                     tool_content = tool_msg["content"]
+                     try:
+@@ -166,7 +166,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
+                             tool_content = json.loads(tool_content)
+                     except (json.JSONDecodeError, AttributeError):
+                         pass  # Keep as string if not valid JSON
+-                    
++
+                     tool_index = len(tool_responses)
+                     tool_name = (
+                         msg["tool_calls"][tool_index]["function"]["name"]
+@@ -181,7 +181,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
+                     tool_response += "\n</tool_response>"
+                     tool_responses.append(tool_response)
+                     j += 1
+-                
++
+                 # Add all tool responses as a single message
+                 if tool_responses:
+                     trajectory.append({
+@@ -189,38 +189,38 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
+                         "value": "\n".join(tool_responses)
+                     })
+                     i = j - 1  # Skip the tool messages we just processed
+-            
++
+             else:
+                 # Regular assistant message without tool calls
+                 # Add <think> tags around reasoning for trajectory storage
+                 content = ""
+-                
++
+                 # Prepend reasoning in <think> tags if available (native thinking tokens)
+                 if msg.get("reasoning") and msg["reasoning"].strip():
+                     content = f"<think>\n{msg['reasoning']}\n</think>\n"
+-                
++
+                 # Convert any <REASONING_SCRATCHPAD> tags to <think> tags
+                 # (used when native thinking is disabled and model reasons via XML)
+                 raw_content = msg["content"] or ""
+                 content += convert_scratchpad_to_think(raw_content)
+-                
++
+                 # Ensure every gpt turn has a <think> block (empty if no reasoning)
+                 if "<think>" not in content:
+                     content = "<think>\n</think>\n" + content
+-                
++
+                 trajectory.append({
+                     "from": "gpt",
+                     "value": content.strip()
+                 })
+-        
++
+         elif msg["role"] == "user":
+             trajectory.append({
+                 "from": "human",
+                 "value": msg["content"]
+             })
+-        
++
+         i += 1
+-    
++
+     return trajectory
+ 
+ 
+@@ -919,30 +919,30 @@ _TRANSIENT_TRANSPORT_ERRORS = frozenset({
+ def extract_reasoning(agent, assistant_message) -> Optional[str]:
+     """
+     Extract reasoning/thinking content from an assistant message.
+-    
++
+     OpenRouter and various providers can return reasoning in multiple formats:
+     1. message.reasoning - Direct reasoning field (DeepSeek, Qwen, etc.)
+     2. message.reasoning_content - Alternative field (Moonshot AI, Novita, etc.)
+     3. message.reasoning_details - Array of {type, summary, ...} objects (OpenRouter unified)
+-    
++
+     Args:
+         assistant_message: The assistant message object from the API response
+-        
++
+     Returns:
+         Combined reasoning text, or None if no reasoning found
+     """
+     reasoning_parts = []
+-    
++
+     # Check direct reasoning field
+     if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
+         reasoning_parts.append(assistant_message.reasoning)
+-    
++
+     # Check reasoning_content field (alternative name used by some providers)
+     if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+         # Don't duplicate if same as reasoning
+         if assistant_message.reasoning_content not in reasoning_parts:
+             reasoning_parts.append(assistant_message.reasoning_content)
+-    
++
+     # Check reasoning_details array (OpenRouter unified format)
+     # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
+     if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+@@ -989,11 +989,11 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
+                 cleaned = block.strip()
+                 if cleaned and cleaned not in reasoning_parts:
+                     reasoning_parts.append(cleaned)
+-    
++
+     # Combine all reasoning parts
+     if reasoning_parts:
+         return "\n\n".join(reasoning_parts)
+-    
++
+     return None
+ 
+ 
 @@ -1496,6 +1496,20 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
      # Check plugin hooks for a block directive before executing anything.
      block_message: Optional[str] = None
@@ -134,7 +518,7 @@ index b98fe4b44..a08db2fb6 100644
      elif function_name == "memory":
          target = function_args.get("target", "memory")
 diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
-index fdf65c075..454467b75 100644
+index fdf65c075..7f45f3065 100644
 --- a/agent/conversation_loop.py
 +++ b/agent/conversation_loop.py
 @@ -209,6 +209,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
@@ -149,6 +533,38 @@ index fdf65c075..454467b75 100644
          )
      except Exception as exc:
          logger.warning("on_session_start hook failed: %s", exc)
+@@ -315,7 +320,7 @@ def run_conversation(
+     # state registry.  Set BEFORE any tool dispatch so snapshots taken at
+     # child-launch time see the parent's real id, not None.
+     agent._current_task_id = effective_task_id
+-    
++
+     # Reset retry counters and iteration budget at the start of each turn
+     # so subagent usage from a previous turn doesn't eat into the next one.
+     agent._invalid_tool_retries = 0
+@@ -407,7 +412,7 @@ def run_conversation(
+     # never stored in the messages list. This keeps them ephemeral: they won't
+     # be saved to session DB, session logs, or batch trajectories, but they're
+     # automatically re-applied on every API call (including session continuations).
+-    
++
+     # Track user turns for memory flush and periodic nudge logic
+     agent._user_turn_count += 1
+ 
+@@ -443,11 +448,11 @@ def run_conversation(
+     messages.append(user_msg)
+     current_turn_user_idx = len(messages) - 1
+     agent._persist_user_message_idx = current_turn_user_idx
+-    
++
+     if not agent.quiet_mode:
+         _print_preview = _summarize_user_message_for_log(user_message)
+         agent._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
+-    
++
+     # ── System prompt (cached per session for prefix caching) ──
+     # Built once on first call, reused for all subsequent calls.
+     # Only rebuilt after context compression events (which invalidate
 @@ -555,7 +560,11 @@ def run_conversation(
              is_first_turn=(not bool(conversation_history)),
              model=agent.model,
@@ -161,10 +577,462 @@ index fdf65c075..454467b75 100644
          )
          _ctx_parts: list[str] = []
          for r in _pre_results:
+@@ -587,7 +596,7 @@ def run_conversation(
+     # present are surfaced in an advisory footer so the model cannot
+     # over-claim success while the file is actually unchanged on disk.
+     agent._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
+-    
++
+     # Record the execution thread so interrupt()/clear_interrupt() can
+     # scope the tool-level interrupt signal to THIS agent's thread only.
+     # Must be set before any thread-scoped interrupt syncing.
+@@ -652,7 +661,7 @@ def run_conversation(
+             if not agent.quiet_mode:
+                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
+             break
+-        
++
+         api_call_count += 1
+         agent._api_call_count = api_call_count
+         agent._touch_activity(f"starting API call #{api_call_count}")
+@@ -701,7 +710,7 @@ def run_conversation(
+         if (agent._skill_nudge_interval > 0
+                 and "skill_manage" in agent.valid_tool_names):
+             agent._iters_since_skill += 1
+-        
++
+         # ── Pre-API-call /steer drain ──────────────────────────────────
+         # If a /steer arrived during the previous API call (while the model
+         # was thinking), drain it now — before we build api_messages — so
+@@ -949,10 +958,10 @@ def run_conversation(
+             except Exception:
+                 pass
+             break
+-        
++
+         # Thinking spinner for quiet mode (animated during API call)
+         thinking_spinner = None
+-        
++
+         if not agent.quiet_mode:
+             agent._vprint(f"\n{agent.log_prefix}🔄 Making API call #{api_call_count}/{agent.max_iterations}...")
+             agent._vprint(f"{agent.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
+@@ -971,13 +980,13 @@ def run_conversation(
+                 spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
+                 thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type, print_fn=agent._print_fn)
+                 thinking_spinner.start()
+-        
++
+         # Log request details if verbose
+         if agent.verbose_logging:
+             logging.debug(f"API Request - Model: {agent.model}, Messages: {len(messages)}, Tools: {len(agent.tools) if agent.tools else 0}")
+             logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
+             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
+-        
++
+         api_start_time = time.time()
+         retry_count = 0
+         max_retries = agent._api_max_retries
+@@ -1143,9 +1152,9 @@ def run_conversation(
+                     )
+                 else:
+                     response = agent._interruptible_api_call(api_kwargs)
+-                
++
+                 api_duration = time.time() - api_start_time
+-                
++
+                 # Stop thinking spinner silently -- the response box or tool
+                 # execution messages that follow are more informative.
+                 if thinking_spinner:
+@@ -1153,15 +1162,15 @@ def run_conversation(
+                     thinking_spinner = None
+                 if agent.thinking_callback:
+                     agent.thinking_callback("")
+-                
++
+                 if not agent.quiet_mode:
+                     agent._vprint(f"{agent.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
+-                
++
+                 if agent.verbose_logging:
+                     # Log response with provider info if available
+                     resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
+                     logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+-                
++
+                 # Validate response shape before proceeding
+                 response_invalid = False
+                 error_details = []
+@@ -1249,11 +1258,11 @@ def run_conversation(
+                         thinking_spinner = None
+                     if agent.thinking_callback:
+                         agent.thinking_callback("")
+-                    
++
+                     # Invalid response — could be rate limiting, provider timeout,
+                     # upstream server error, or malformed response.
+                     retry_count += 1
+-                    
++
+                     # Eager fallback: empty/malformed responses are a common
+                     # rate-limit symptom.  Switch to fallback immediately
+                     # rather than retrying with extended backoff.
+@@ -1275,18 +1284,18 @@ def run_conversation(
+                             provider_name = response.error.metadata.get('provider_name', 'Unknown')
+                     elif response and hasattr(response, 'message') and response.message:
+                         error_msg = str(response.message)
+-                    
++
+                     # Try to get provider from model field (OpenRouter often returns actual model used)
+                     if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
+                         provider_name = f"model={response.model}"
+-                    
++
+                     # Check for x-openrouter-provider or similar metadata
+                     if provider_name == "Unknown" and response:
+                         # Log all response attributes for debugging
+                         resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                         if agent.verbose_logging:
+                             logging.debug(f"Response attributes for invalid response: {resp_attrs}")
+-                    
++
+                     # Extract error code from response for contextual diagnostics
+                     _resp_error_code = None
+                     if response and hasattr(response, 'error') and response.error:
+@@ -1325,7 +1334,7 @@ def run_conversation(
+                     cleaned_provider_error = agent._clean_error_message(error_msg)
+                     agent._vprint(f"{agent.log_prefix}   📝 Provider message: {cleaned_provider_error}", force=True)
+                     agent._vprint(f"{agent.log_prefix}   ⏱️  {_failure_hint}", force=True)
+-                    
++
+                     if retry_count >= max_retries:
+                         # Try fallback before giving up
+                         agent._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+@@ -1344,12 +1353,12 @@ def run_conversation(
+                             "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
+                             "failed": True  # Mark as failure for filtering
+                         }
+-                    
++
+                     # Backoff before retry — jittered exponential: 5s base, 120s cap
+                     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
+                     agent._vprint(f"{agent.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
+                     logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
+-                    
++
+                     # Sleep in small increments to stay responsive to interrupts
+                     sleep_end = time.time() + wait_time
+                     _backoff_touch_counter = 0
+@@ -1592,7 +1601,7 @@ def run_conversation(
+                             "failed": True,
+                             "error": "First response truncated due to output length limit"
+                         }
+-                
++
+                 # Track actual token usage from response for context management
+                 if hasattr(response, 'usage') and response.usage:
+                     canonical_usage = normalize_usage(
+@@ -1697,10 +1706,10 @@ def run_conversation(
+                                 "Token persistence failed (session=%s, tokens=%d): %s",
+                                 agent.session_id, total_tokens, e,
+                             )
+-                    
++
+                     if agent.verbose_logging:
+                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
+-                    
++
+                     # Surface cache hit stats for any provider that reports
+                     # them — not just those where we inject cache_control
+                     # markers.  OpenAI/Kimi/DeepSeek/Qwen all do automatic
+@@ -1722,7 +1731,7 @@ def run_conversation(
+                             f"{cached:,}/{prompt:,} tokens "
+                             f"({hit_pct:.0f}% hit, {written:,} written)"
+                         )
+-                
++
+                 has_retried_429 = False  # Reset on success
+                 # Clear Nous rate limit state on successful request —
+                 # proves the limit has reset and other sessions can
+@@ -2280,7 +2289,7 @@ def run_conversation(
+                 agent._touch_activity(
+                     f"API error recovery (attempt {retry_count}/{max_retries})"
+                 )
+-                
++
+                 error_type = type(api_error).__name__
+                 error_msg = str(api_error).lower()
+                 _error_summary = agent._summarize_api_error(api_error)
+@@ -2346,7 +2355,7 @@ def run_conversation(
+                         "completed": False,
+                         "interrupted": True,
+                     }
+-                
++
+                 # Check for 413 payload-too-large BEFORE generic 4xx handler.
+                 # A 413 is a payload-size error — the correct response is to
+                 # compress history and retry, not abort immediately.
+@@ -2981,7 +2990,7 @@ def run_conversation(
+                             f"error retry backoff ({retry_count}/{max_retries}), "
+                             f"{int(sleep_end - time.time())}s remaining"
+                         )
+-        
++
+         # If the API call was interrupted, skip response processing
+         if interrupted:
+             _turn_exit_reason = "interrupted_during_api_call"
+@@ -3023,7 +3032,7 @@ def run_conversation(
+             normalized = _transport.normalize_response(response, **_normalize_kwargs)
+             assistant_message = normalized
+             finish_reason = normalized.finish_reason
+-            
++
+             # Normalize content to string — some OpenAI-compatible servers
+             # (llama-server, etc.) return content as a dict or list instead
+             # of a plain string, which crashes downstream .strip() calls.
+@@ -3100,14 +3109,14 @@ def run_conversation(
+                         agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
+                     except Exception:
+                         pass
+-            
++
+             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
+             # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
+             if has_incomplete_scratchpad(assistant_message.content or ""):
+                 agent._incomplete_scratchpad_retries += 1
+-                
++
+                 agent._vprint(f"{agent.log_prefix}⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
+-                
++
+                 if agent._incomplete_scratchpad_retries <= 2:
+                     agent._vprint(f"{agent.log_prefix}🔄 Retrying API call ({agent._incomplete_scratchpad_retries}/2)...")
+                     # Don't add the broken message, just retry
+@@ -3116,11 +3125,11 @@ def run_conversation(
+                     # Max retries - discard this turn and save as partial
+                     agent._vprint(f"{agent.log_prefix}❌ Max retries (2) for incomplete scratchpad. Saving as partial.", force=True)
+                     agent._incomplete_scratchpad_retries = 0
+-                    
++
+                     rolled_back_messages = agent._get_messages_up_to_last_assistant(messages)
+                     agent._cleanup_task_resources(effective_task_id)
+                     agent._persist_session(messages, conversation_history)
+-                    
++
+                     return {
+                         "final_response": None,
+                         "messages": rolled_back_messages,
+@@ -3129,7 +3138,7 @@ def run_conversation(
+                         "partial": True,
+                         "error": "Incomplete REASONING_SCRATCHPAD after 2 retries"
+                     }
+-            
++
+             # Reset incomplete scratchpad counter on clean response
+             agent._incomplete_scratchpad_retries = 0
+ 
+@@ -3191,16 +3200,16 @@ def run_conversation(
+                 }
+             elif hasattr(agent, "_codex_incomplete_retries"):
+                 agent._codex_incomplete_retries = 0
+-            
++
+             # Check for tool calls
+             if assistant_message.tool_calls:
+                 if not agent.quiet_mode:
+                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
+-                
++
+                 if agent.verbose_logging:
+                     for tc in assistant_message.tool_calls:
+                         logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+-                
++
+                 # Validate tool call names - detect model hallucinations
+                 # Repair mismatched tool names before validating
+                 for tc in assistant_message.tool_calls:
+@@ -3252,7 +3261,7 @@ def run_conversation(
+                     continue
+                 # Reset retry counter on successful tool call validation
+                 agent._invalid_tool_retries = 0
+-                
++
+                 # Validate tool call arguments are valid JSON
+                 # Handle empty strings as empty objects (common model quirk)
+                 invalid_json_args = []
+@@ -3272,7 +3281,7 @@ def run_conversation(
+                         json.loads(args)
+                     except json.JSONDecodeError as e:
+                         invalid_json_args.append((tc.function.name, str(e)))
+-                
++
+                 if invalid_json_args:
+                     # Check if the invalid JSON is due to truncation rather
+                     # than a model formatting mistake.  Routers sometimes
+@@ -3318,11 +3327,11 @@ def run_conversation(
+                         # Using tool results (not user messages) preserves role alternation.
+                         agent._vprint(f"{agent.log_prefix}⚠️  Injecting recovery tool results for invalid JSON...")
+                         agent._invalid_json_retries = 0  # Reset for next attempt
+-                        
++
+                         # Append the assistant message with its (broken) tool_calls
+                         recovery_assistant = agent._build_assistant_message(assistant_message, finish_reason)
+                         messages.append(recovery_assistant)
+-                        
++
+                         # Respond with tool error results for each tool call
+                         invalid_names = {name for name, _ in invalid_json_args}
+                         for tc in assistant_message.tool_calls:
+@@ -3342,7 +3351,7 @@ def run_conversation(
+                                 "content": tool_result,
+                             })
+                         continue
+-                
++
+                 # Reset retry counter on successful JSON validation
+                 agent._invalid_json_retries = 0
+ 
+@@ -3355,7 +3364,7 @@ def run_conversation(
+                 )
+ 
+                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+-                
++
+                 # If this turn has both content AND tool_calls, capture the content
+                 # as a fallback final response. Common pattern: model delivers its
+                 # answer and calls memory/skill tools as a side-effect in the same
+@@ -3382,7 +3391,7 @@ def run_conversation(
+                         clean = agent._strip_think_blocks(turn_content).strip()
+                         if clean:
+                             agent._vprint(f"  ┊ 💬 {clean}")
+-                
++
+                 # Pop thinking-only prefill message(s) before appending
+                 # (tool-call path — same rationale as the final-response path).
+                 _had_prefill = False
+@@ -3455,7 +3464,7 @@ def run_conversation(
+                 _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
+                 if _tc_names == {"execute_code"}:
+                     agent.iteration_budget.refund()
+-                
++
+                 # Use real token counts from the API response to decide
+                 # compression.  prompt_tokens + completion_tokens is the
+                 # actual context size the provider reported plus the
+@@ -3498,24 +3507,24 @@ def run_conversation(
+                     # _flush_messages_to_session_db writes compressed messages
+                     # to the new session (see preflight compression comment).
+                     conversation_history = None
+-                
++
+                 # Save session log incrementally (so progress is visible even if interrupted)
+                 agent._session_messages = messages
+-                
++
+                 # Continue loop for next response
+                 continue
+-            
++
+             else:
+                 # No tool calls - this is the final response
+                 final_response = assistant_message.content or ""
+-                
++
+                 # Fix: unmute output when entering the no-tool-call branch
+                 # so the user can see empty-response warnings and recovery
+                 # status messages.  _mute_post_response was set during a
+                 # prior housekeeping tool turn and should not silence the
+                 # final response path.
+                 agent._mute_post_response = False
+-                
++
+                 # Check if response only has think block with no actual content after it
+                 if not agent._has_content_after_think_block(final_response):
+                     # ── Partial stream recovery ─────────────────────
+@@ -3771,7 +3780,7 @@ def run_conversation(
+ 
+                     final_response = "(empty)"
+                     break
+-                
++
+                 # Reset retry counter/signature on successful content
+                 agent._empty_content_retries = 0
+                 agent._thinking_prefill_retries = 0
+@@ -3808,9 +3817,9 @@ def run_conversation(
+                     final_response = "".join(truncated_response_parts) + final_response
+                     truncated_response_parts = []
+                     length_continue_retries = 0
+-                
++
+                 final_response = agent._strip_think_blocks(final_response).strip()
+-                
++
+                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+ 
+                 # Pop thinking-only prefill and empty-response retry
+@@ -3829,21 +3838,21 @@ def run_conversation(
+                     messages.pop()
+ 
+                 messages.append(final_msg)
+-                
++
+                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+                 if not agent.quiet_mode:
+                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
+                 break
+-            
++
+         except Exception as e:
+             error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+             try:
+                 print(f"❌ {error_msg}")
+             except (OSError, ValueError):
+                 logger.error(error_msg)
+-            
++
+             logger.debug("Outer loop error in API call #%d", api_call_count, exc_info=True)
+-            
++
+             # If an assistant message with tool_calls was already appended,
+             # the API expects a role="tool" result for every tool_call_id.
+             # Fill in error results for any that weren't answered yet.
+@@ -3870,7 +3879,7 @@ def run_conversation(
+                             }
+                             messages.append(err_msg)
+                 break
+-            
++
+             # Non-tool errors don't need a synthetic message injected.
+             # The error is already printed to the user (line above), and
+             # the retry loop continues.  Injecting a fake user/assistant
+@@ -3885,7 +3894,7 @@ def run_conversation(
+                 # session resume (avoids consecutive user messages).
+                 messages.append({"role": "assistant", "content": final_response})
+                 break
+-    
++
+     if final_response is None and (
+         api_call_count >= agent.max_iterations
+         or agent.iteration_budget.remaining <= 0
+@@ -4123,11 +4132,11 @@ def run_conversation(
+     if _leftover_steer:
+         result["pending_steer"] = _leftover_steer
+     agent._response_was_previewed = False
+-    
++
+     # Include interrupt message if one triggered the interrupt
+     if interrupted and agent._interrupt_message:
+         result["interrupt_message"] = agent._interrupt_message
+-    
++
+     # Clear interrupt state after handling
+     agent.clear_interrupt()
+ 
 @@ -4149,6 +4158,53 @@ def run_conversation(
          interrupted=interrupted,
      )
-
+ 
 +    # ─── Memory Write Pipeline: Shadow Mode ───────────────────────
 +    # After each turn, run memory_reflection in shadow mode.
 +    # Logs proposed writes without actually writing to Graph.
@@ -217,10 +1085,10 @@ index fdf65c075..454467b75 100644
      if final_response and not interrupted and (_should_review_memory or _should_review_skills):
 diff --git a/agent/disclosure_router.py b/agent/disclosure_router.py
 new file mode 100644
-index 000000000..9fd1a41a6
+index 000000000..255972b3b
 --- /dev/null
 +++ b/agent/disclosure_router.py
-@@ -0,0 +1,335 @@
+@@ -0,0 +1,319 @@
 +"""
 +Disclosure Router — Proactive memory injection via trigger conditions.
 +
@@ -254,53 +1122,37 @@ index 000000000..9fd1a41a6
 +
 +logger = logging.getLogger(__name__)
 +
-+# Default disclosure rules embedded as fallback
++# Default disclosure rules embedded as fallback.
++# Keep these generic: deployment-specific triggers belong in
++# ~/.hermes/disclosure_rules.yaml, not in an open-source patch.
 +_DEFAULT_RULES = [
 +    {
-+        "name": "linuxdo",
-+        "patterns": ["linux.do", "linuxdo", "LinuxDo"],
-+        "query": "linuxdo cloudflare camoufox bypass cookie",
-+        "priority": 10,
-+    },
-+    {
-+        "name": "hermes-agent-dev",
-+        "patterns": ["hermes agent", "hermes-agent", "gateway", "补丁", "patch", "hermes update"],
-+        "query": "hermes agent patch gateway update branch",
++        "name": "agent-development",
++        "patterns": ["agent", "gateway", "patch", "update", "配置", "补丁", "更新"],
++        "query": "agent gateway patch update configuration",
 +        "priority": 8,
 +    },
 +    {
-+        "name": "beibei-project",
-+        "patterns": ["beibei", "不背不背", "题库", "DSE"],
-+        "query": "beibei DSE question bank deploy",
-+        "priority": 8,
-+    },
-+    {
-+        "name": "telegram-delivery",
-+        "patterns": ["发文件", "send file", "telegram", "sendDocument"],
-+        "query": "telegram file delivery sendDocument curl",
++        "name": "file-delivery",
++        "patterns": ["send file", "file delivery", "发文件", "sendDocument"],
++        "query": "file delivery messaging platform attachment",
 +        "priority": 7,
 +    },
 +    {
-+        "name": "user-identity",
-+        "patterns": ["Steven", "左灏", "姚宗宏", "Nitrogen"],
-+        "query": "user identity Steven Nitrogen 左灏 姚宗宏",
-+        "priority": 9,
-+    },
-+    {
-+        "name": "cron-management",
-+        "patterns": ["cron", "定时任务", "cronjob", "scheduled"],
-+        "query": "cron job scheduled task delivery",
++        "name": "scheduled-tasks",
++        "patterns": ["cron", "scheduled", "定时任务", "任务调度"],
++        "query": "scheduled task cron job delivery",
 +        "priority": 6,
 +    },
 +    {
 +        "name": "vision-image",
-+        "patterns": ["看图", "图片", "image", "screenshot", "截图", "vision"],
-+        "query": "vision image analysis screenshot mimo",
++        "patterns": ["image", "screenshot", "vision", "看图", "图片", "截图"],
++        "query": "vision image analysis screenshot",
 +        "priority": 5,
 +    },
 +    {
 +        "name": "memory-system",
-+        "patterns": ["记忆", "memory", "hindsight", "元认知", "metacognition"],
++        "patterns": ["memory", "hindsight", "metacognition", "记忆", "元认知"],
 +        "query": "memory hindsight metacognition recall retain",
 +        "priority": 9,
 +    },
@@ -368,16 +1220,18 @@ index 000000000..9fd1a41a6
 +                import yaml
 +                with open(path) as f:
 +                    data = yaml.safe_load(f)
-+                if data and "rules" in data:
-+                    for r in data["rules"]:
++                if data:
++                    for r in data.get("rules", []):
 +                        self.rules.append(DisclosureRule(
 +                            name=r.get("name", "unnamed"),
 +                            patterns=r.get("patterns", []),
 +                            query=r.get("query", ""),
 +                            priority=r.get("priority", 5),
 +                    ))
-+                    logger.info("DisclosureRouter: loaded %d rules from %s", len(self.rules), path)
-+                    return
++                    self.BLOCKED_COMBINATIONS = list(data.get("tool_blocks", []))
++                    if self.rules:
++                        logger.info("DisclosureRouter: loaded %d rules from %s", len(self.rules), path)
++                        return
 +            except Exception as e:
 +                logger.warning("DisclosureRouter: failed to load %s: %s", path, e)
 +
@@ -515,16 +1369,14 @@ index 000000000..9fd1a41a6
 +    # Tool-call Interceptor — block known failure patterns
 +    # =========================================================================
 +
-+    # Maps (tool_name, arg_pattern) → (reason, alternative)
-+    # arg_pattern is a regex matched against json.dumps of the tool arguments
-+    BLOCKED_COMBINATIONS = [
-+        {
-+            "tool": "browser_navigate",
-+            "url_pattern": r"linux\.do|linuxdo",
-+            "reason": "linux.do uses Cloudflare protection. browser_navigate gets blocked.",
-+            "alternative": "Use camoufox (Python) to open the page with anti-detection, or use curl for JSON API (.json endpoint).",
-+        },
-+    ]
++    # Optional deployment-specific tool-call blocks loaded from config.
++    # Example ~/.hermes/disclosure_rules.yaml:
++    # tool_blocks:
++    #   - tool: browser_navigate
++    #     url_pattern: "example\.com"
++    #     reason: "This site requires a special browser profile."
++    #     alternative: "Use the configured browser profile or an official API."
++    BLOCKED_COMBINATIONS = []
 +
 +    def check_tool_call(self, tool_name: str, tool_args: dict) -> Optional[str]:
 +        """
@@ -614,7 +1466,7 @@ index 000000000..78a415a8c
 +        logger.debug("Access tracker failed: %s", e)
 diff --git a/agent/hindsight_reranker.py b/agent/hindsight_reranker.py
 new file mode 100644
-index 000000000..d122463c0
+index 000000000..46c2473f3
 --- /dev/null
 +++ b/agent/hindsight_reranker.py
 @@ -0,0 +1,87 @@
@@ -660,8 +1512,8 @@ index 000000000..d122463c0
 +    (r'(debug|DEBUG|error|ERROR|traceback|Traceback|exception)', 'debug_log'),
 +    (r'(cron|job|scheduled|定时|任务)', 'cron'),
 +    (r'(tool.*error|tool.*fail|工具.*错误)', 'tool_error'),
-+    (r'(用户|左灏|Steven|Nitrogen|age|年龄|家庭)', 'user_profile'),
-+    (r'(项目|beibei|部署|技术栈|architecture)', 'project_fact'),
++    (r'(用户|user|profile|preference|age|年龄|家庭|偏好)', 'user_profile'),
++    (r'(项目|project|部署|技术栈|architecture)', 'project_fact'),
 +    (r'(规则|rule|format|格式|注意|MEDIA)', 'rule'),
 +    (r'(对话|聊过|讨论|conversation|session)', 'conversation_event'),
 +    (r'(教训|经验|lesson|learned|发现)', 'lesson'),
@@ -4641,7 +5493,7 @@ index 000000000..d3a576745
 +"""Memory Graph web package."""
 diff --git a/agent/memory_graph/web/dashboard.py b/agent/memory_graph/web/dashboard.py
 new file mode 100644
-index 000000000..db5bf2697
+index 000000000..b25c79b77
 --- /dev/null
 +++ b/agent/memory_graph/web/dashboard.py
 @@ -0,0 +1,610 @@
@@ -4703,7 +5555,7 @@ index 000000000..db5bf2697
 +      <div class="error" id="error"></div>
 +    </form>
 +  </div>
-+  <div class="foot">mg.bz9.me</div>
++  <div class="foot">Memory Graph</div>
 +</div>
 +<script>
 +(function(){
@@ -5257,10 +6109,10 @@ index 000000000..db5bf2697
 +</html>"""
 diff --git a/agent/memory_metacognition.py b/agent/memory_metacognition.py
 new file mode 100644
-index 000000000..82a80d3d7
+index 000000000..ef1160ead
 --- /dev/null
 +++ b/agent/memory_metacognition.py
-@@ -0,0 +1,1283 @@
+@@ -0,0 +1,1287 @@
 +"""Memory Metacognition Framework — interfaces + policy loader.
 +
 +Provides three pluggable extension points for enhancing the agent's
@@ -6375,7 +7227,7 @@ index 000000000..82a80d3d7
 +
 +    Example: user says "你买蓝牙键盘"
 +    - Entities extracted: ["蓝牙键盘", "键盘"]
-+    - Hindsight finds: "左灏购买了罗技K380蓝牙键盘"
++    - Hindsight finds: "用户购买了某型号蓝牙键盘"
 +    - Injected into context for the model
 +    """
 +
@@ -6492,9 +7344,13 @@ index 000000000..82a80d3d7
 +        import re as _re
 +        text = user_input.lower()
 +        entities = []
-+        for ent in ['左灏', 'nitrogen', 'steven', 'beibei', 'dse', 'telegram', 'hermes', 'hindsight']:
-+            if ent in text:
-+                entities.append(ent)
++        # Extract generic entities instead of hardcoding deployment-specific
++        # user/project names. Deployment-specific aliases can be handled by the
++        # memory index or disclosure_rules.yaml.
++        for ent in _extract_entities(user_input, max_entities=8):
++            ent_l = ent.lower()
++            if ent_l not in entities:
++                entities.append(ent_l)
 +        # Check for compound intent (operation + entity) FIRST
 +                # Check for inventory query
 +        _inv_patterns = ['记得哪些', '记得什么', '有哪些记忆', '知道哪些', '记忆类别', '有哪些信息']
@@ -6559,14 +7415,14 @@ index c9abc48c7..c4c1c9d87 100644
 +        bank/session scoping so group replies cannot read a sender's private
 +        memory bank.
          """
-
+ 
      def system_prompt_block(self) -> str:
 diff --git a/agent/memory_write_pipeline.py b/agent/memory_write_pipeline.py
 new file mode 100644
-index 000000000..cc2c3ee10
+index 000000000..fd76d7c4a
 --- /dev/null
 +++ b/agent/memory_write_pipeline.py
-@@ -0,0 +1,530 @@
+@@ -0,0 +1,533 @@
 +"""Memory Write Pipeline — automatic memory extraction, classification, and write-back.
 +
 +Flow: Conversation → Reflection → Candidate Extraction → Write Gates → Storage → Readback Check
@@ -6591,7 +7447,7 @@ index 000000000..cc2c3ee10
 +    importance: float  # 0.0-1.0
 +    memory_type: str   # user_fact, project_fact, rule, task, preference, decision, lesson
 +    target_store: str  # memory_graph, memory_md, hindsight, review, ignore
-+    target_path: str   # e.g. "用户档案/左灏/考试成绩"
++    target_path: str   # e.g. "用户档案/学习者/考试成绩"
 +    evidence_quote: str
 +    confidence: float
 +    source_type: str   # user_direct, user_correction, agent_inference, system_event
@@ -6686,8 +7542,8 @@ index 000000000..cc2c3ee10
 +        f"{fact.subject} {fact.predicate}",
 +        f"{fact.subject} {fact.object_value[:20]}",
 +    ]
-+    # Add Chinese variants
-+    if fact.subject in ['左灏', 'Steven', 'beibei']:
++    # Add compact CJK variant when the subject contains CJK characters.
++    if re.search(r'[\u4e00-\u9fff]', fact.subject):
 +        queries.append(f"{fact.subject}{fact.predicate}")
 +    return queries
 +
@@ -6755,7 +7611,10 @@ index 000000000..cc2c3ee10
 +
 +        # Extract facts with entity + attribute
 +        entity_patterns = [
-+            (r'(左灏|Steven|Nitrogen|beibei|DSE)', 'entity'),
++            # Quoted entity names: “Project X” / 「学生A」 / 《项目A》
++            (r'[“"「《]([^”"」》]{2,40})[”"」》]', 'entity'),
++            # Generic CJK proper-noun-ish subject followed by fact context.
++            (r'([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_-]{1,39})(?=.*?(成绩|分数|考试|mock|技术栈|部署|数据库|配置|服务器|架构))', 'entity'),
 +        ]
 +        for pattern, etype in entity_patterns:
 +            if re.search(pattern, combined):
@@ -6936,7 +7795,7 @@ index 000000000..cc2c3ee10
 +WRITE_TESTS = [
 +    {
 +        'id': 'W01',
-+        'input': '左灏这次数学 mock 85 分',
++        'input': '学生A这次数学 mock 85 分',
 +        'expect_type': 'user_fact',
 +        'expect_target': 'memory_graph',
 +        'expect_path_contains': '用户档案',
@@ -6952,15 +7811,15 @@ index 000000000..cc2c3ee10
 +    },
 +    {
 +        'id': 'W03',
-+        'input': 'beibei 现在用 PostgreSQL',
++        'input': '项目A 现在用 PostgreSQL',
 +        'expect_type': 'project_fact',
 +        'expect_target': 'memory_graph',
-+        'expect_path_contains': '项目/beibei',
++        'expect_path_contains': '项目/项目A',
 +        'expect_importance_min': 0.85,
 +    },
 +    {
 +        'id': 'W04',
-+        'input': '以后给 Steven 发数学内容不要用 LaTeX',
++        'input': '以后给学生A发数学内容不要用 LaTeX',
 +        'expect_type': 'rule',
 +        'expect_target': 'memory_md',
 +        'expect_importance_min': 0.90,
@@ -7002,7 +7861,7 @@ index 000000000..cc2c3ee10
 +    },
 +    {
 +        'id': 'W10',
-+        'input': '左灏不是 16 岁，是 17',
++        'input': '学生A不是 16 岁，是 17',
 +        'expect_type': 'user_fact',
 +        'expect_target': 'memory_graph',
 +        'expect_action': 'supersede',
@@ -7103,8 +7962,8 @@ index 9c36d205a..029eb0f82 100644
 +++ b/agent/prompt_builder.py
 @@ -1423,6 +1423,36 @@ def _load_cursorrules(cwd_path: Path) -> str:
      return _truncate_content(cursorrules_content, ".cursorrules")
-
-
+ 
+ 
 +
 +
 +def expand_recall_queries(user_message: str, user_context: dict = None) -> list[str]:
@@ -7137,10 +7996,10 @@ index 9c36d205a..029eb0f82 100644
 +
  def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
      """Discover and load context files for the system prompt.
-
+ 
 diff --git a/agent/request_context.py b/agent/request_context.py
 new file mode 100644
-index 000000000..38a2dfc11
+index 000000000..02b5074de
 --- /dev/null
 +++ b/agent/request_context.py
 @@ -0,0 +1,86 @@
@@ -7220,7 +8079,7 @@ index 000000000..38a2dfc11
 +        if not ns:
 +            raise ValueError(
 +                f"Cannot write user data to path '{path}': no namespace set. "
-+                f"User data requires namespace (e.g. 'telegram:7359770766'). "
++                f"User data requires namespace (e.g. 'telegram:<chat_id>'). "
 +                f"Configure default_terminal_user in config.yaml."
 +            )
 +        return ns
@@ -7232,7 +8091,7 @@ index 000000000..38a2dfc11
 +    _ctx.set(None)
 diff --git a/agent/shadow_write_logger.py b/agent/shadow_write_logger.py
 new file mode 100644
-index 000000000..6bea8c1ca
+index 000000000..40db6ea4a
 --- /dev/null
 +++ b/agent/shadow_write_logger.py
 @@ -0,0 +1,216 @@
@@ -7459,7 +8318,7 @@ index bc29c9ef8..4d2565a1b 100644
 @@ -237,6 +237,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
          if context_files_prompt:
              context_parts.append(context_files_prompt)
-
+ 
 +        # Memory Metacognition — inject memory index block for fast reference
 +        try:
 +            from agent.prompt_builder import build_memory_index_block
@@ -7473,7 +8332,7 @@ index bc29c9ef8..4d2565a1b 100644
 +
      # ── Volatile tier (changes per session/turn — never cached) ───
      volatile_parts: List[str] = []
-
+ 
 diff --git a/agent/tool_executor.py b/agent/tool_executor.py
 index b161b507e..9324dcd8e 100644
 --- a/agent/tool_executor.py
@@ -7518,9 +8377,188 @@ index b161b507e..9324dcd8e 100644
              if agent._should_emit_quiet_tool_messages():
                  agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
 diff --git a/gateway/config.py b/gateway/config.py
-index 833269752..06fa0ce3f 100644
+index 833269752..8a4a402c2 100644
 --- a/gateway/config.py
 +++ b/gateway/config.py
+@@ -203,7 +203,7 @@ _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.value
+ class HomeChannel:
+     """
+     Default destination for a platform.
+-    
++
+     When a cron job specifies deliver="telegram" without a specific chat ID,
+     messages are sent to this home channel. Thread-aware platforms may also
+     store a thread/topic ID so the bare platform target routes to the exact
+@@ -213,7 +213,7 @@ class HomeChannel:
+     chat_id: str
+     name: str  # Human-readable name for display
+     thread_id: Optional[str] = None
+-    
++
+     def to_dict(self) -> Dict[str, Any]:
+         result = {
+             "platform": self.platform.value,
+@@ -223,7 +223,7 @@ class HomeChannel:
+         if self.thread_id:
+             result["thread_id"] = self.thread_id
+         return result
+-    
++
+     @classmethod
+     def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
+         return cls(
+@@ -238,7 +238,7 @@ class HomeChannel:
+ class SessionResetPolicy:
+     """
+     Controls when sessions reset (lose context).
+-    
++
+     Modes:
+     - "daily": Reset at a specific hour each day
+     - "idle": Reset after N minutes of inactivity
+@@ -250,7 +250,7 @@ class SessionResetPolicy:
+     idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
+     notify: bool = True  # Send a notification to the user when auto-reset occurs
+     notify_exclude_platforms: tuple = ("api_server", "webhook")  # Platforms that don't get reset notifications
+-    
++
+     def to_dict(self) -> Dict[str, Any]:
+         return {
+             "mode": self.mode,
+@@ -259,7 +259,7 @@ class SessionResetPolicy:
+             "notify": self.notify,
+             "notify_exclude_platforms": list(self.notify_exclude_platforms),
+         }
+-    
++
+     @classmethod
+     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
+         # Handle both missing keys and explicit null values (YAML null → None)
+@@ -284,7 +284,7 @@ class PlatformConfig:
+     token: Optional[str] = None  # Bot token (Telegram, Discord)
+     api_key: Optional[str] = None  # API key if different from token
+     home_channel: Optional[HomeChannel] = None
+-    
++
+     # Reply threading mode (Telegram/Slack)
+     # - "off": Never thread replies to original message
+     # - "first": Only first chunk threads to user's message (default)
+@@ -450,26 +450,26 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
+ class GatewayConfig:
+     """
+     Main gateway configuration.
+-    
++
+     Manages all platform connections, session policies, and delivery settings.
+     """
+     # Platform configurations
+     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
+-    
++
+     # Session reset policies by type
+     default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
+     reset_by_type: Dict[str, SessionResetPolicy] = field(default_factory=dict)
+     reset_by_platform: Dict[Platform, SessionResetPolicy] = field(default_factory=dict)
+-    
++
+     # Reset trigger commands
+     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
+ 
+     # User-defined quick commands (slash commands that bypass the agent loop)
+     quick_commands: Dict[str, Any] = field(default_factory=dict)
+-    
++
+     # Storage paths
+     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
+-    
++
+     # Delivery settings
+     always_log_local: bool = True  # Always save cron outputs to local files
+ 
+@@ -536,34 +536,34 @@ class GatewayConfig:
+             pass  # Registry not yet initialised during early import
+ 
+         return False
+-    
++
+     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
+         """Get the home channel for a platform."""
+         config = self.platforms.get(platform)
+         if config:
+             return config.home_channel
+         return None
+-    
++
+     def get_reset_policy(
+-        self, 
++        self,
+         platform: Optional[Platform] = None,
+         session_type: Optional[str] = None
+     ) -> SessionResetPolicy:
+         """
+         Get the appropriate reset policy for a session.
+-        
++
+         Priority: platform override > type override > default
+         """
+         # Platform-specific override takes precedence
+         if platform and platform in self.reset_by_platform:
+             return self.reset_by_platform[platform]
+-        
++
+         # Type-specific override (dm, group, thread)
+         if session_type and session_type in self.reset_by_type:
+             return self.reset_by_type[session_type]
+-        
++
+         return self.default_reset_policy
+-    
++
+     def to_dict(self) -> Dict[str, Any]:
+         return {
+             "platforms": {
+@@ -587,7 +587,7 @@ class GatewayConfig:
+             "streaming": self.streaming.to_dict(),
+             "session_store_max_age_days": self.session_store_max_age_days,
+         }
+-    
++
+     @classmethod
+     def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+         platforms = {}
+@@ -597,11 +597,11 @@ class GatewayConfig:
+                 platforms[platform] = PlatformConfig.from_dict(platform_data)
+             except ValueError:
+                 pass  # Skip unknown platforms
+-        
++
+         reset_by_type = {}
+         for type_name, policy_data in data.get("reset_by_type", {}).items():
+             reset_by_type[type_name] = SessionResetPolicy.from_dict(policy_data)
+-        
++
+         reset_by_platform = {}
+         for platform_name, policy_data in data.get("reset_by_platform", {}).items():
+             try:
+@@ -609,15 +609,15 @@ class GatewayConfig:
+                 reset_by_platform[platform] = SessionResetPolicy.from_dict(policy_data)
+             except ValueError:
+                 pass
+-        
++
+         default_policy = SessionResetPolicy()
+         if "default_reset_policy" in data:
+             default_policy = SessionResetPolicy.from_dict(data["default_reset_policy"])
+-        
++
+         sessions_dir = get_hermes_home() / "sessions"
+         if "sessions_dir" in data:
+             sessions_dir = Path(data["sessions_dir"])
+-        
++
+         quick_commands = data.get("quick_commands", {})
+         if not isinstance(quick_commands, dict):
+             quick_commands = {}
 @@ -834,6 +834,12 @@ def load_gateway_config() -> GatewayConfig:
                      bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
                  if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
@@ -7534,8 +8572,96 @@ index 833269752..06fa0ce3f 100644
                  if "free_response_channels" in platform_cfg:
                      bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                  if "mention_patterns" in platform_cfg:
+@@ -1210,7 +1216,7 @@ def load_gateway_config() -> GatewayConfig:
+ 
+     # Override with environment variables
+     _apply_env_overrides(config)
+-    
++
+     # --- Validate loaded values ---
+     _validate_gateway_config(config)
+ 
+@@ -1288,7 +1294,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
+ 
+ def _apply_env_overrides(config: GatewayConfig) -> None:
+     """Apply environment variable overrides to config."""
+-    
++
+     # Telegram
+     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+     if telegram_token:
+@@ -1296,14 +1302,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
+             config.platforms[Platform.TELEGRAM] = PlatformConfig()
+         config.platforms[Platform.TELEGRAM].enabled = True
+         config.platforms[Platform.TELEGRAM].token = telegram_token
+-    
++
+     # Reply threading mode for Telegram (off/first/all)
+     telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
+     if telegram_reply_mode in {"off", "first", "all"}:
+         if Platform.TELEGRAM not in config.platforms:
+             config.platforms[Platform.TELEGRAM] = PlatformConfig()
+         config.platforms[Platform.TELEGRAM].reply_to_mode = telegram_reply_mode
+-    
++
+     telegram_fallback_ips = os.getenv("TELEGRAM_FALLBACK_IPS", "")
+     if telegram_fallback_ips:
+         if Platform.TELEGRAM not in config.platforms:
+@@ -1320,7 +1326,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
+             name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
+             thread_id=os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
+         )
+-    
++
+     # Discord
+     discord_token = os.getenv("DISCORD_BOT_TOKEN")
+     if discord_token:
+@@ -1328,7 +1334,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
+             config.platforms[Platform.DISCORD] = PlatformConfig()
+         config.platforms[Platform.DISCORD].enabled = True
+         config.platforms[Platform.DISCORD].token = discord_token
+-    
++
+     discord_home = os.getenv("DISCORD_HOME_CHANNEL")
+     if discord_home and Platform.DISCORD in config.platforms:
+         config.platforms[Platform.DISCORD].home_channel = HomeChannel(
+@@ -1337,14 +1343,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
+             name=os.getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
+             thread_id=os.getenv("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
+         )
+-    
++
+     # Reply threading mode for Discord (off/first/all)
+     discord_reply_mode = os.getenv("DISCORD_REPLY_TO_MODE", "").lower()
+     if discord_reply_mode in {"off", "first", "all"}:
+         if Platform.DISCORD not in config.platforms:
+             config.platforms[Platform.DISCORD] = PlatformConfig()
+         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
+-    
++
+     # WhatsApp (typically uses different auth mechanism)
+     whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in {"true", "1", "yes"}
+     whatsapp_disabled_explicitly = os.getenv("WHATSAPP_ENABLED", "").lower() in {"false", "0", "no"}
+@@ -1394,7 +1400,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
+             name=os.getenv("SLACK_HOME_CHANNEL_NAME", ""),
+             thread_id=os.getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
+         )
+-    
++
+     # Signal
+     signal_url = os.getenv("SIGNAL_HTTP_URL")
+     signal_account = os.getenv("SIGNAL_ACCOUNT")
+@@ -1863,7 +1869,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
+             config.default_reset_policy.idle_minutes = int(idle_minutes)
+         except ValueError:
+             pass
+-    
++
+     reset_hour = os.getenv("SESSION_RESET_HOUR")
+     if reset_hour:
+         try:
 diff --git a/gateway/platforms/telegram.py b/gateway/platforms/telegram.py
-index 799a836df..fdef50328 100644
+index 799a836df..ba09df767 100644
 --- a/gateway/platforms/telegram.py
 +++ b/gateway/platforms/telegram.py
 @@ -16,7 +16,8 @@ import tempfile
@@ -7545,9 +8671,9 @@ index 799a836df..fdef50328 100644
 -from typing import Dict, List, Optional, Any
 +from typing import Dict, List, Optional, Any, Deque
 +from collections import deque
-
+ 
  logger = logging.getLogger(__name__)
-
+ 
 @@ -425,6 +426,7 @@ class TelegramAdapter(BasePlatformAdapter):
          )
          self._pending_text_batches: Dict[str, MessageEvent] = {}
@@ -7556,10 +8682,161 @@ index 799a836df..fdef50328 100644
          self._polling_error_task: Optional[asyncio.Task] = None
          self._polling_conflict_count: int = 0
          self._polling_network_error_count: int = 0
+@@ -1334,11 +1336,11 @@ class TelegramAdapter(BasePlatformAdapter):
+                 self.name,
+             )
+             return False
+-        
++
+         if not self.config.token:
+             logger.error("[%s] No bot token configured", self.name)
+             return False
+-        
++
+         try:
+             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
+                 return False
+@@ -1428,7 +1430,7 @@ class TelegramAdapter(BasePlatformAdapter):
+             builder = builder.request(request).get_updates_request(get_updates_request)
+             self._app = builder.build()
+             self._bot = self._app.bot
+-            
++
+             # Register handlers
+             self._app.add_handler(TelegramMessageHandler(
+                 filters.TEXT & ~filters.COMMAND,
+@@ -1448,7 +1450,7 @@ class TelegramAdapter(BasePlatformAdapter):
+             ))
+             # Handle inline keyboard button callbacks (update prompts)
+             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+-            
++
+             # Start polling — retry initialize() for transient TLS resets
+             try:
+                 from telegram.error import NetworkError, TimedOut
+@@ -1547,7 +1549,7 @@ class TelegramAdapter(BasePlatformAdapter):
+                     drop_pending_updates=True,
+                     error_callback=_polling_error_callback,
+                 )
+-            
++
+             # Register bot commands so Telegram shows a hint menu when users type /
+             # List is derived from the central COMMAND_REGISTRY — adding a new
+             # gateway command there automatically adds it to the Telegram menu.
+@@ -1591,7 +1593,7 @@ class TelegramAdapter(BasePlatformAdapter):
+                     e,
+                     exc_info=True,
+                 )
+-            
++
+             self._mark_connected()
+             mode = "webhook" if self._webhook_mode else "polling"
+             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+@@ -1608,7 +1610,7 @@ class TelegramAdapter(BasePlatformAdapter):
+                 )
+ 
+             return True
+-            
++
+         except Exception as e:
+             self._release_platform_lock()
+             message = f"Telegram startup failed: {e}"
+@@ -1679,11 +1681,11 @@ class TelegramAdapter(BasePlatformAdapter):
+         """Send a message to a Telegram chat."""
+         if not self._bot:
+             return SendResult(success=False, error="Not connected")
+-        
++
+         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
+         if not content or not content.strip():
+             return SendResult(success=True, message_id=None)
+-        
++
+         try:
+             # Format and split message if needed
+             formatted = self.format_message(content)
+@@ -1698,12 +1700,12 @@ class TelegramAdapter(BasePlatformAdapter):
+                     re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                     for chunk in chunks
+                 ]
+-            
++
+             message_ids = []
+             thread_id = self._metadata_thread_id(metadata)
+             requested_thread_id = self._message_thread_id_for_send(thread_id)
+             used_thread_fallback = False
+-            
++
+             try:
+                 from telegram.error import NetworkError as _NetErr
+             except ImportError:
+@@ -1887,7 +1889,7 @@ class TelegramAdapter(BasePlatformAdapter):
+                     "thread_fallback": used_thread_fallback,
+                 },
+             )
+-            
++
+         except Exception as e:
+             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
+             err_str = str(e).lower()
+@@ -3382,11 +3384,11 @@ class TelegramAdapter(BasePlatformAdapter):
+         """Send audio as a native Telegram voice message or audio file."""
+         if not self._bot:
+             return SendResult(success=False, error="Not connected")
+-        
++
+         try:
+             if not os.path.exists(audio_path):
+                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
+-            
++
+             with open(audio_path, "rb") as audio_file:
+                 ext = os.path.splitext(audio_path)[1].lower()
+                 # .ogg / .opus files -> send as voice (round playable bubble)
+@@ -3796,7 +3798,7 @@ class TelegramAdapter(BasePlatformAdapter):
+         metadata: Optional[Dict[str, Any]] = None,
+     ) -> SendResult:
+         """Send an image natively as a Telegram photo.
+-        
++
+         Tries URL-based send first (fast, works for <5MB images).
+         Falls back to downloading and uploading as file (supports up to 10MB).
+         """
+@@ -3892,7 +3894,7 @@ class TelegramAdapter(BasePlatformAdapter):
+         """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
+         if not self._bot:
+             return SendResult(success=False, error="Not connected")
+-        
++
+         try:
+             _anim_thread = self._metadata_thread_id(metadata)
+             reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
+@@ -3967,10 +3969,10 @@ class TelegramAdapter(BasePlatformAdapter):
+         """Get information about a Telegram chat."""
+         if not self._bot:
+             return {"name": "Unknown", "type": "dm"}
+-        
++
+         try:
+             chat = await self._bot.get_chat(int(chat_id))
+-            
++
+             chat_type = "dm"
+             if chat.type == ChatType.GROUP:
+                 chat_type = "group"
+@@ -3980,7 +3982,7 @@ class TelegramAdapter(BasePlatformAdapter):
+                     chat_type = "forum"
+             elif chat.type == ChatType.CHANNEL:
+                 chat_type = "channel"
+-            
++
+             return {
+                 "name": chat.title or chat.full_name or str(chat_id),
+                 "type": chat_type,
 @@ -4223,6 +4225,33 @@ class TelegramAdapter(BasePlatformAdapter):
              return {str(part).strip() for part in raw if str(part).strip()}
          return {part.strip() for part in str(raw).split(",") if part.strip()}
-
+ 
 +    def _telegram_history_backfill(self) -> bool:
 +        """Return whether group trigger messages should fetch recent chat context."""
 +        configured = self.config.extra.get("history_backfill")
@@ -7589,11 +8866,11 @@ index 799a836df..fdef50328 100644
 +
      def _telegram_allowed_chats(self) -> set[str]:
          """Return the whitelist of group/supergroup chat IDs the bot will respond in.
-
+ 
 @@ -4629,6 +4658,161 @@ class TelegramAdapter(BasePlatformAdapter):
              adapter_name = getattr(self, "name", "telegram")
              logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
-
+ 
 +    def _should_capture_channel_context(self, message: Message) -> bool:
 +        """Return True when this trigger should receive recent group context."""
 +        if not self._telegram_history_backfill():
@@ -7751,7 +9028,7 @@ index 799a836df..fdef50328 100644
 +
      def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
          """Apply Telegram group trigger rules.
-
+ 
 @@ -4752,7 +4936,9 @@ class TelegramAdapter(BasePlatformAdapter):
          msg = self._effective_update_message(update)
          if not msg or not msg.text:
@@ -7763,10 +9040,47 @@ index 799a836df..fdef50328 100644
              if self._should_observe_unmentioned_group_message(msg):
                  self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
              return
-@@ -5530,6 +5716,10 @@ class TelegramAdapter(BasePlatformAdapter):
+@@ -4977,7 +5163,7 @@ class TelegramAdapter(BasePlatformAdapter):
+             return
+ 
+         msg = update.message
+-        
++
+         # Determine media type
+         if msg.sticker:
+             msg_type = MessageType.STICKER
+@@ -4993,13 +5179,13 @@ class TelegramAdapter(BasePlatformAdapter):
+             msg_type = MessageType.DOCUMENT
+         else:
+             msg_type = MessageType.DOCUMENT
+-        
++
+         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
+-        
++
+         # Add caption as text
+         if msg.caption:
+             event.text = self._clean_bot_trigger_text(msg.caption)
+-        
++
+         # Handle stickers: describe via vision tool with caching
+         if msg.sticker:
+             await self._handle_sticker(msg, event)
+@@ -5442,7 +5628,7 @@ class TelegramAdapter(BasePlatformAdapter):
+         """
+         chat = message.chat
+         user = message.from_user
+-        
++
+         # Determine chat type.  Normalize through ``str`` so tests/mocks and
+         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
+         # string-like, but mocks often provide plain strings).
+@@ -5529,7 +5715,11 @@ class TelegramAdapter(BasePlatformAdapter):
+             chat_topic=chat_topic,
              message_id=str(message.message_id),
          )
-
+-        
++
 +        channel_context = None
 +        if self._should_capture_channel_context(message):
 +            channel_context = self._build_channel_context_for_trigger(message)
@@ -7781,7 +9095,7 @@ index 799a836df..fdef50328 100644
 +            channel_context=channel_context,
              timestamp=message.date,
          )
-
+ 
 diff --git a/hermes_cli/auth.py b/hermes_cli/auth.py
 index 59daa2c5d..cd994efab 100644
 --- a/hermes_cli/auth.py
@@ -7815,7 +9129,7 @@ index 7d28ce076..ed754107f 100644
 @@ -1358,7 +1358,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
              "has_refresh_token": bool(cc_creds.get("refreshToken")),
          }
-
+ 
 -    env_token = os.getenv("ANTHROPIC_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
 +    env_token = os.getenv("ANTHROPIC_TOKEN")
      if env_token:
@@ -7832,7 +9146,7 @@ index 580443719..6da3238ec 100644
 +        user_id: str = None,
      ) -> List[Dict[str, Any]]:
          """List sessions with preview (first user message) and last active timestamp.
-
+ 
 @@ -1234,6 +1235,9 @@ class SessionDB:
              placeholders = ",".join("?" for _ in exclude_sources)
              where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -7840,7 +9154,7 @@ index 580443719..6da3238ec 100644
 +        if user_id is not None:
 +            where_clauses.append("s.user_id = ?")
 +            params.append(user_id)
-
+ 
          where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
          if order_by_last_active:
 @@ -2119,6 +2123,7 @@ class SessionDB:
@@ -7854,14 +9168,14 @@ index 580443719..6da3238ec 100644
 @@ -2186,6 +2191,10 @@ class SessionDB:
              where_clauses.append(f"m.role IN ({role_placeholders})")
              params.extend(role_filter)
-
+ 
 +        if user_id is not None:
 +            where_clauses.append("s.user_id = ?")
 +            params.append(user_id)
 +
          where_sql = " AND ".join(where_clauses)
          params.extend([limit, offset])
-
+ 
 @@ -2258,6 +2267,9 @@ class SessionDB:
                  if role_filter:
                      tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
@@ -7888,7 +9202,7 @@ index c1a719f91..e07856661 100644
 +++ b/plugins/image_gen/openai/__init__.py
 @@ -223,7 +223,20 @@ class OpenAIImageGenProvider(ImageGenProvider):
          }
-
+ 
          try:
 -            client = openai.OpenAI()
 +            client_kwargs: Dict[str, Any] = {}
@@ -7915,7 +9229,7 @@ index 40772f79d..7c1457e7a 100644
 @@ -1428,6 +1428,15 @@ class HindsightMemoryProvider(MemoryProvider):
              logger.debug("sync_turn: skipped (shutting down)")
              return
-
+ 
 +        # Skip retain for platforms whose messages cannot be attributed to
 +        # real users (e.g. iLink WeChat bot reports all messages as bot's own
 +        # from_user_id).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
@@ -7927,11 +9241,11 @@ index 40772f79d..7c1457e7a 100644
 +
          if session_id:
              self._session_id = str(session_id).strip()
-
+ 
 @@ -1490,6 +1499,119 @@ class HindsightMemoryProvider(MemoryProvider):
          self._register_atexit()
          self._retain_queue.put(_do_retain)
-
+ 
 +    def _hindsight_text_fallback(self, query: str, limit: int = 5) -> str:
 +        """Fallback recall when the embedding provider is unavailable.
 +
@@ -8060,7 +9374,7 @@ index 40772f79d..7c1457e7a 100644
 +                ):
 +                    return self._hindsight_text_fallback(query)
                  return tool_error(f"Failed to search memory: {e}")
-
+ 
          elif tool_name == "hindsight_reflect":
 diff --git a/scripts/mg_users.py b/scripts/mg_users.py
 new file mode 100644
@@ -8558,7 +9872,7 @@ index 3f517aa1a..a30e1d97d 100644
 +        assert {"tg_alice", "tg_bob", "cli_local"}.issubset(sids)
 diff --git a/tools/memory_graph_tool.py b/tools/memory_graph_tool.py
 new file mode 100644
-index 000000000..c94c49cb0
+index 000000000..c403219ad
 --- /dev/null
 +++ b/tools/memory_graph_tool.py
 @@ -0,0 +1,540 @@
@@ -9112,13 +10426,13 @@ index 65b9d32f1..5972f6d3c 100644
  # so they don't clutter the user's session history.
 -_HIDDEN_SESSION_SOURCES = ("tool",)
 +_HIDDEN_SESSION_SOURCES = ("tool", "weixin")
-
-
+ 
+ 
  def _format_timestamp(ts: Union[int, float, str, None]) -> str:
 @@ -107,11 +107,13 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
      return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
-
-
+ 
+ 
 -def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
 +def _list_recent_sessions(db, limit: int, current_session_id: str = None, user_id: str = None, source: str = None) -> str:
      """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
@@ -9138,7 +10452,7 @@ index 65b9d32f1..5972f6d3c 100644
 +    source: str = None,
  ) -> str:
      """Scroll shape: return a window of messages centered on an anchor.
-
+ 
 @@ -281,6 +285,8 @@ def _discover(
      limit: int,
      sort: Optional[str],
@@ -9165,14 +10479,14 @@ index 65b9d32f1..5972f6d3c 100644
 +    source: str = None,
  ) -> str:
      """Single-shape tool. Mode inferred from which args are set.
-
+ 
 @@ -426,7 +436,7 @@ def session_search(
-
+ 
      # Browse shape: no query → recent sessions.
      if not query or not isinstance(query, str) or not query.strip():
 -        return _list_recent_sessions(db, limit, current_session_id)
 +        return _list_recent_sessions(db, limit, current_session_id, user_id=user_id, source=source)
-
+ 
      # Parse role_filter
      role_list: Optional[List[str]] = None
 @@ -447,6 +457,8 @@ def session_search(
@@ -9182,12 +10496,25 @@ index 65b9d32f1..5972f6d3c 100644
 +        user_id=user_id,
 +        source=source,
      )
-
-
+ 
+ 
 diff --git a/toolsets.py b/toolsets.py
-index 5de07e4c7..a00fe4caa 100644
+index 5de07e4c7..afca6b166 100644
 --- a/toolsets.py
 +++ b/toolsets.py
+@@ -15,10 +15,10 @@ Features:
+ 
+ Usage:
+     from toolsets import get_toolset, resolve_toolset, get_all_toolsets
+-    
++
+     # Get tools for a specific toolset
+     tools = get_toolset("research")
+-    
++
+     # Resolve a toolset to get all tool names (including from composed toolsets)
+     all_tools = resolve_toolset("full_stack")
+ """
 @@ -48,6 +48,12 @@ _HERMES_CORE_TOOLS = [
      "text_to_speech",
      # Planning & memory
@@ -9201,10 +10528,105 @@ index 5de07e4c7..a00fe4caa 100644
      # Session history search
      "session_search",
      # Clarifying questions
-@@ -206,6 +212,18 @@ TOOLSETS = {
+@@ -82,7 +88,7 @@ TOOLSETS = {
+         "tools": ["web_search", "web_extract"],
+         "includes": []  # No other toolsets included
+     },
+-    
++
+     "search": {
+         "description": "Web search only (no content extraction/scraping)",
+         "tools": ["web_search"],
+@@ -99,7 +105,7 @@ TOOLSETS = {
+         "tools": ["x_search"],
          "includes": []
      },
-
+-    
++
+     "vision": {
+         "description": "Image analysis and vision tools",
+         "tools": ["vision_analyze"],
+@@ -111,7 +117,7 @@ TOOLSETS = {
+         "tools": ["video_analyze"],
+         "includes": []
+     },
+-    
++
+     "image_gen": {
+         "description": "Creative generation tools (images)",
+         "tools": ["image_generate"],
+@@ -144,19 +150,19 @@ TOOLSETS = {
+         "tools": ["terminal", "process"],
+         "includes": []
+     },
+-    
++
+     "moa": {
+         "description": "Advanced reasoning and problem-solving tools",
+         "tools": ["mixture_of_agents"],
+         "includes": []
+     },
+-    
++
+     "skills": {
+         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
+         "tools": ["skills_list", "skill_view", "skill_manage"],
+         "includes": []
+     },
+-    
++
+     "browser": {
+         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
+         "tools": [
+@@ -168,62 +174,74 @@ TOOLSETS = {
+         ],
+         "includes": []
+     },
+-    
++
+     "cronjob": {
+         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
+         "tools": ["cronjob"],
+         "includes": []
+     },
+-    
++
+     "messaging": {
+         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
+         "tools": ["send_message"],
+         "includes": []
+     },
+ 
+-    
++
+     "file": {
+         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
+         "tools": ["read_file", "write_file", "patch", "search_files"],
+         "includes": []
+     },
+-    
++
+     "tts": {
+         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
+         "tools": ["text_to_speech"],
+         "includes": []
+     },
+-    
++
+     "todo": {
+         "description": "Task planning and tracking for multi-step work",
+         "tools": ["todo"],
+         "includes": []
+     },
+-    
++
+     "memory": {
+         "description": "Persistent memory across sessions (personal notes + user profile)",
+         "tools": ["memory"],
+         "includes": []
+     },
+-    
++
 +    "memory_graph": {
 +        "description": "URI-tree structured memory graph (search, create, update, delete, list, alias, glossary)",
 +        "tools": [
@@ -9220,3 +10642,255 @@ index 5de07e4c7..a00fe4caa 100644
      "session_search": {
          "description": "Search and recall past conversations with summarization",
          "tools": ["session_search"],
+         "includes": []
+     },
+-    
++
+     "clarify": {
+         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
+         "tools": ["clarify"],
+         "includes": []
+     },
+-    
++
+     "code_execution": {
+         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
+         "tools": ["execute_code"],
+         "includes": []
+     },
+-    
++
+     "delegation": {
+         "description": "Spawn subagents with isolated context for complex subtasks",
+         "tools": ["delegate_task"],
+@@ -308,19 +326,19 @@ TOOLSETS = {
+ 
+ 
+     # Scenario-specific toolsets
+-    
++
+     "debugging": {
+         "description": "Debugging and troubleshooting toolkit",
+         "tools": ["terminal", "process"],
+         "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
+     },
+-    
++
+     "safe": {
+         "description": "Safe toolkit without terminal access",
+         "tools": [],
+         "includes": ["web", "vision", "image_gen"]
+     },
+-    
++
+     # ==========================================================================
+     # Full Hermes toolsets (CLI + messaging platforms)
+     #
+@@ -379,7 +397,7 @@ TOOLSETS = {
+         ],
+         "includes": []
+     },
+-    
++
+     "hermes-cli": {
+         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
+         "tools": _HERMES_CORE_TOOLS,
+@@ -402,7 +420,7 @@ TOOLSETS = {
+         "tools": _HERMES_CORE_TOOLS,
+         "includes": []
+     },
+-    
++
+     "hermes-discord": {
+         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
+         "tools": _HERMES_CORE_TOOLS + [
+@@ -411,19 +429,19 @@ TOOLSETS = {
+         ],
+         "includes": []
+     },
+-    
++
+     "hermes-whatsapp": {
+         "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
+         "tools": _HERMES_CORE_TOOLS,
+         "includes": []
+     },
+-    
++
+     "hermes-slack": {
+         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
+         "tools": _HERMES_CORE_TOOLS,
+         "includes": []
+     },
+-    
++
+     "hermes-signal": {
+         "description": "Signal bot toolset - encrypted messaging platform (full access)",
+         "tools": _HERMES_CORE_TOOLS,
+@@ -539,10 +557,10 @@ TOOLSETS = {
+ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
+     """
+     Get a toolset definition by name.
+-    
++
+     Args:
+         name (str): Name of the toolset
+-        
++
+     Returns:
+         Dict: Toolset definition with description, tools, and includes
+         None: If toolset not found
+@@ -590,20 +608,20 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
+ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
+     """
+     Recursively resolve a toolset to get all tool names.
+-    
++
+     This function handles toolset composition by recursively resolving
+     included toolsets and combining all tools.
+-    
++
+     Args:
+         name (str): Name of the toolset to resolve
+         visited (Set[str]): Set of already visited toolsets (for cycle detection)
+-        
++
+     Returns:
+         List[str]: List of all tool names in the toolset
+     """
+     if visited is None:
+         visited = set()
+-    
++
+     # Special aliases that represent all tools across every toolset
+     # This ensures future toolsets are automatically included without changes.
+     if name in {"all", "*"}:
+@@ -657,26 +675,26 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
+     for included_name in toolset.get("includes", []):
+         included_tools = resolve_toolset(included_name, visited)
+         tools.update(included_tools)
+-    
++
+     return sorted(tools)
+ 
+ 
+ def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
+     """
+     Resolve multiple toolsets and combine their tools.
+-    
++
+     Args:
+         toolset_names (List[str]): List of toolset names to resolve
+-        
++
+     Returns:
+         List[str]: Combined list of all tool names (deduplicated)
+     """
+     all_tools = set()
+-    
++
+     for name in toolset_names:
+         tools = resolve_toolset(name)
+         all_tools.update(tools)
+-    
++
+     return sorted(all_tools)
+ 
+ 
+@@ -711,7 +729,7 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
+     Get all available toolsets with their definitions.
+ 
+     Includes both statically-defined toolsets and plugin-registered ones.
+-    
++
+     Returns:
+         Dict: All toolset definitions
+     """
+@@ -736,7 +754,7 @@ def get_toolset_names() -> List[str]:
+     Get names of all available toolsets (excluding aliases).
+ 
+     Includes plugin-registered toolset names.
+-    
++
+     Returns:
+         List[str]: List of toolset names
+     """
+@@ -757,10 +775,10 @@ def get_toolset_names() -> List[str]:
+ def validate_toolset(name: str) -> bool:
+     """
+     Check if a toolset name is valid.
+-    
++
+     Args:
+         name (str): Toolset name to validate
+-        
++
+     Returns:
+         bool: True if valid, False otherwise
+     """
+@@ -782,7 +800,7 @@ def create_custom_toolset(
+ ) -> None:
+     """
+     Create a custom toolset at runtime.
+-    
++
+     Args:
+         name (str): Name for the new toolset
+         description (str): Description of the toolset
+@@ -801,19 +819,19 @@ def create_custom_toolset(
+ def get_toolset_info(name: str) -> Dict[str, Any]:
+     """
+     Get detailed information about a toolset including resolved tools.
+-    
++
+     Args:
+         name (str): Toolset name
+-        
++
+     Returns:
+         Dict: Detailed toolset information
+     """
+     toolset = get_toolset(name)
+     if not toolset:
+         return None
+-    
++
+     resolved_tools = resolve_toolset(name)
+-    
++
+     return {
+         "name": name,
+         "description": toolset["description"],
+@@ -830,7 +848,7 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
+ if __name__ == "__main__":
+     print("Toolsets System Demo")
+     print("=" * 60)
+-    
++
+     print("\nAvailable Toolsets:")
+     print("-" * 40)
+     for name, toolset in get_all_toolsets().items():
+@@ -838,20 +856,20 @@ if __name__ == "__main__":
+         composite = "[composite]" if info["is_composite"] else "[leaf]"
+         print(f"  {composite} {name:20} - {toolset['description']}")
+         print(f"     Tools: {len(info['resolved_tools'])} total")
+-    
++
+     print("\nToolset Resolution Examples:")
+     print("-" * 40)
+     for name in ["web", "terminal", "safe", "debugging"]:
+         tools = resolve_toolset(name)
+         print(f"\n  {name}:")
+         print(f"    Resolved to {len(tools)} tools: {', '.join(sorted(tools))}")
+-    
++
+     print("\nMultiple Toolset Resolution:")
+     print("-" * 40)
+     combined = resolve_multiple_toolsets(["web", "vision", "terminal"])
+     print("  Combining ['web', 'vision', 'terminal']:")
+     print(f"    Result: {', '.join(sorted(combined))}")
+-    
++
+     print("\nCustom Toolset Creation:")
+     print("-" * 40)
+     create_custom_toolset(

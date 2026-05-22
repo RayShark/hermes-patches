@@ -70,12 +70,29 @@ mkdir -p "$PATCHES_DIR"
 
 echo "💾 Saving custom patches..."
 
-# Get commits ahead of origin/main by Nitrogen
-AHEAD_COMMITS=$(git log --format="%H" origin/main..HEAD --no-merges --author="Nitrogen" --reverse 2>/dev/null | wc -l)
+# Pick a public base branch. Prefer official upstream when configured; fall back
+# to origin/main for forks or local-only installs.
+BASE_REF="${PATCH_BASE_REF:-}"
+if [ -z "$BASE_REF" ]; then
+    if git rev-parse --verify upstream/main >/dev/null 2>&1; then
+        BASE_REF="upstream/main"
+    else
+        BASE_REF="origin/main"
+    fi
+fi
+
+AUTHOR_ARGS=()
+if [ -n "${PATCH_AUTHOR_FILTER:-}" ]; then
+    AUTHOR_ARGS=(--author="$PATCH_AUTHOR_FILTER")
+fi
+
+# Get non-merge commits ahead of the selected base. Do not hardcode a local
+# author's name in an open-source patch workflow.
+AHEAD_COMMITS=$(git log --format="%H" "$BASE_REF..HEAD" --no-merges "${AUTHOR_ARGS[@]}" --reverse 2>/dev/null | wc -l)
 
 if [ "$AHEAD_COMMITS" -eq 0 ]; then
     EXISTING=$(ls "$PATCHES_DIR"/*.patch 2>/dev/null | wc -l)
-    echo "  ℹ️  No custom commits ahead of origin/main"
+    echo "  ℹ️  No custom commits ahead of $BASE_REF"
     echo "  📦 Preserving $EXISTING existing patches for reapplication"
     exit 0
 fi
@@ -83,7 +100,7 @@ fi
 # Only regenerate if we have commits to save
 # DON'T delete existing patches — only add/update
 COUNT=0
-git log --format="%H" origin/main..HEAD --no-merges --author="Nitrogen" --reverse | while read sha; do
+git log --format="%H" "$BASE_REF..HEAD" --no-merges "${AUTHOR_ARGS[@]}" --reverse | while read sha; do
     COUNT=$((COUNT + 1))
     SUBJECT=$(git log -1 --format="%s" "$sha" | tr '/ ' '_-' | tr -cd '[:alnum:]_-' | head -c 60)
     PATCH_FILE="$PATCHES_DIR/${COUNT}_${SUBJECT}.patch"
@@ -102,8 +119,8 @@ echo "📦 Total patches: $TOTAL"
 COMBINED_DIR="$HOME/.hermes/patches/integration-v1"
 COMBINED_FILE="$COMBINED_DIR/combined-final.patch"
 mkdir -p "$COMBINED_DIR"
-AHEAD=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+AHEAD=$(git rev-list --count "$BASE_REF..HEAD" 2>/dev/null || echo 0)
 if [ "$AHEAD" -gt 0 ]; then
-    git diff origin/main..HEAD > "$COMBINED_FILE"
+    git diff "$BASE_REF..HEAD" > "$COMBINED_FILE"
     echo "📦 Updated combined-final.patch ($(wc -c < "$COMBINED_FILE") bytes)"
 fi

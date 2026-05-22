@@ -22,7 +22,7 @@ class CandidateFact:
     importance: float  # 0.0-1.0
     memory_type: str   # user_fact, project_fact, rule, task, preference, decision, lesson
     target_store: str  # memory_graph, memory_md, hindsight, review, ignore
-    target_path: str   # e.g. "用户档案/左灏/考试成绩"
+    target_path: str   # e.g. "用户档案/学习者/考试成绩"
     evidence_quote: str
     confidence: float
     source_type: str   # user_direct, user_correction, agent_inference, system_event
@@ -117,8 +117,8 @@ def generate_readback_queries(fact: CandidateFact) -> List[str]:
         f"{fact.subject} {fact.predicate}",
         f"{fact.subject} {fact.object_value[:20]}",
     ]
-    # Add Chinese variants
-    if fact.subject in ['左灏', 'Steven', 'beibei']:
+    # Add compact CJK variant when the subject contains CJK characters.
+    if re.search(r'[\u4e00-\u9fff]', fact.subject):
         queries.append(f"{fact.subject}{fact.predicate}")
     return queries
 
@@ -126,19 +126,19 @@ def generate_readback_queries(fact: CandidateFact) -> List[str]:
 
 class MemoryWritePipeline:
     """Orchestrates automatic memory writing."""
-    
+
     def __init__(self, graph_client=None, hindsight_client=None):
         self.graph = graph_client
         self.hindsight = hindsight_client
         self._write_log = []
-    
+
     def reflect_and_extract(self, user_msg: str, assistant_msg: str) -> Dict[str, Any]:
         """Generate memory reflection from a conversation turn."""
         combined = f"{user_msg} {assistant_msg}"
         mtype, importance = score_importance(combined)
-        
+
         candidates = []
-        
+
         # Extract user corrections
         correction_patterns = [
             r'不是\s*(\d+)\s*[,，]?\s*是\s*(\d+)',
@@ -158,7 +158,7 @@ class MemoryWritePipeline:
                     evidence_quote=user_msg, confidence=0.95,
                     source_type='user_correction', reason='User corrected a fact'
                 ))
-        
+
         # Extract rules
         rule_patterns = [
             r'以后.*?不要.*?用\s*(\S+)',
@@ -183,15 +183,18 @@ class MemoryWritePipeline:
                     requires_review=is_sensitive,
                     reason='Sensitive rule requires review' if is_sensitive else 'User stated a rule'
                 ))
-        
+
         # Extract facts with entity + attribute
         entity_patterns = [
-            (r'(左灏|Steven|Nitrogen|beibei|DSE)', 'entity'),
+            # Quoted entity names: “Project X” / 「学生A」 / 《项目A》
+            (r'[“"「《]([^”"」》]{2,40})[”"」》]', 'entity'),
+            # Generic CJK proper-noun-ish subject followed by fact context.
+            (r'([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_-]{1,39})(?=.*?(成绩|分数|考试|mock|技术栈|部署|数据库|配置|服务器|架构))', 'entity'),
         ]
         for pattern, etype in entity_patterns:
             if re.search(pattern, combined):
                 entity_name = re.search(pattern, combined).group(1)
-                
+
                 # Check for specific fact types
                 if re.search(r'(成绩|分数|考试|mock)', combined):
                     score_match = re.search(r'(\d+)\s*分', combined)
@@ -205,7 +208,7 @@ class MemoryWritePipeline:
                         evidence_quote=user_msg, confidence=0.90,
                         source_type='user_direct'
                     ))
-                
+
                 # Check for project facts (技术栈/部署/数据库/配置)
                 if re.search(r'(技术栈|部署|数据库|配置|服务器|架构|用|换成|改成|迁移)', combined):
                     # Extract the value after the keyword
@@ -220,7 +223,7 @@ class MemoryWritePipeline:
                         evidence_quote=user_msg, confidence=0.90,
                         source_type='user_direct'
                     ))
-        
+
 
         # Extract preferences
         pref_patterns = [
@@ -243,7 +246,7 @@ class MemoryWritePipeline:
                     source_type='agent_inference' if is_inference else 'user_direct',
                     requires_review=is_inference,
                 ))
-        
+
         # Extract tasks
         task_patterns = [
             r'明天.*?(检查|部署|修复|确认)',
@@ -261,7 +264,7 @@ class MemoryWritePipeline:
                     evidence_quote=user_msg, confidence=0.85,
                     source_type='user_direct'
                 ))
-        
+
         # Deduplicate overlapping regex hits while preserving order. This prevents
         # one correction such as "不是85，是83" from generating duplicate write
         # candidates via multiple correction patterns.
@@ -281,17 +284,17 @@ class MemoryWritePipeline:
             'memory_type': mtype,
             'evidence': user_msg[:200],
         }
-    
+
     def classify_write(self, candidate: CandidateFact, existing_facts: List[Dict] = None, namespace: str = "") -> Dict[str, Any]:
         """Apply 5 gates to determine if and where to write."""
         existing = existing_facts or []
-        
+
         # Gate 1: Importance
         if candidate.importance < 0.40:
             return {'action': 'ignore', 'reason': 'Low importance'}
-        
+
         # Gate 2: Type (already classified)
-        
+
         # Gate 3: Conflict
         conflict_uri = detect_conflict(candidate, existing)
         if conflict_uri:
@@ -303,11 +306,11 @@ class MemoryWritePipeline:
                 'reason': f'Conflicts with existing fact: {conflict_uri}',
                 'conflict_with': conflict_uri
             }
-        
+
         # Gate 4: Dedup
         candidate.dedup_key = make_dedup_key(candidate)
         # (dedup check would query existing facts)
-        
+
         # Gate 5: Review
         if candidate.source_type == 'agent_inference':
             candidate.requires_review = True
@@ -317,19 +320,19 @@ class MemoryWritePipeline:
         if any(p in candidate.object_value for p in sensitive_patterns):
             candidate.requires_review = True
             return {'action': 'review', 'target_store': 'review', 'reason': 'Sensitive rule requires review'}
-        
+
         # Determine target store
         target = route_target(candidate.memory_type, candidate.importance,
                              candidate.memory_type == 'rule')
-        
+
         # Override if candidate already has a target (from extraction)
         if candidate.target_store and candidate.target_store != 'ignore':
             target = candidate.target_store
-        
+
         # If requires_review, override target to review queue
         if candidate.requires_review:
             target = 'review'
-        
+
         return {
             'action': 'write',
             'target_store': target,
@@ -338,7 +341,7 @@ class MemoryWritePipeline:
             'dedup_key': candidate.dedup_key,
             'namespace': namespace or candidate.namespace,
         }
-    
+
     def write_and_verify(self, candidate: CandidateFact, classification: Dict) -> Dict[str, Any]:
         """Write to target store and verify readback."""
         result = {
@@ -349,17 +352,17 @@ class MemoryWritePipeline:
             'readback_ok': False,
             'readback_queries': [],
         }
-        
+
         if classification.get('action') != 'write':
             return result
-        
+
         # Generate readback queries
         result['readback_queries'] = generate_readback_queries(candidate)
-        
+
         # Actual write would happen here
         # For now, return the plan
         result['written'] = True  # placeholder
-        
+
         return result
 
 # ─── Write Regression Test Suite ──────────────────────────────────
@@ -367,7 +370,7 @@ class MemoryWritePipeline:
 WRITE_TESTS = [
     {
         'id': 'W01',
-        'input': '左灏这次数学 mock 85 分',
+        'input': '学生A这次数学 mock 85 分',
         'expect_type': 'user_fact',
         'expect_target': 'memory_graph',
         'expect_path_contains': '用户档案',
@@ -383,15 +386,15 @@ WRITE_TESTS = [
     },
     {
         'id': 'W03',
-        'input': 'beibei 现在用 PostgreSQL',
+        'input': '项目A 现在用 PostgreSQL',
         'expect_type': 'project_fact',
         'expect_target': 'memory_graph',
-        'expect_path_contains': '项目/beibei',
+        'expect_path_contains': '项目/项目A',
         'expect_importance_min': 0.85,
     },
     {
         'id': 'W04',
-        'input': '以后给 Steven 发数学内容不要用 LaTeX',
+        'input': '以后给学生A发数学内容不要用 LaTeX',
         'expect_type': 'rule',
         'expect_target': 'memory_md',
         'expect_importance_min': 0.90,
@@ -433,7 +436,7 @@ WRITE_TESTS = [
     },
     {
         'id': 'W10',
-        'input': '左灏不是 16 岁，是 17',
+        'input': '学生A不是 16 岁，是 17',
         'expect_type': 'user_fact',
         'expect_target': 'memory_graph',
         'expect_action': 'supersede',
@@ -462,11 +465,11 @@ def run_write_tests() -> Dict[str, Any]:
     pipeline = MemoryWritePipeline()
     results = []
     passed = 0
-    
+
     for test in WRITE_TESTS:
         reflection = pipeline.reflect_and_extract(test['input'], '')
         candidates = reflection.get('candidates', [])
-        
+
         if not candidates:
             # No candidate extracted
             mtype, importance = score_importance(test['input'])
@@ -491,38 +494,38 @@ def run_write_tests() -> Dict[str, Any]:
                 'action': classification.get('action'),
                 'requires_review': candidate.requires_review,
             }
-        
+
         # Check expectations
         checks = []
-        
+
         if 'expect_type' in test:
             ok = result.get('type') == test['expect_type']
             checks.append(('type', ok, f"got {result.get('type')}"))
-        
+
         if 'expect_target' in test:
             ok = result.get('target') == test['expect_target']
             checks.append(('target', ok, f"got {result.get('target')}"))
-        
+
         if 'expect_importance_min' in test:
             ok = result.get('importance', 0) >= test['expect_importance_min']
             checks.append(('importance_min', ok, f"got {result.get('importance')}"))
-        
+
         if 'expect_importance_max' in test:
             ok = result.get('importance', 1) <= test['expect_importance_max']
             checks.append(('importance_max', ok, f"got {result.get('importance')}"))
-        
+
         if 'expect_requires_review' in test:
             ok = result.get('requires_review') == test['expect_requires_review']
             checks.append(('requires_review', ok, f"got {result.get('requires_review')}"))
-        
+
         all_pass = all(c[1] for c in checks) if checks else False
         if all_pass:
             passed += 1
-        
+
         result['checks'] = checks
         result['passed'] = all_pass
         results.append(result)
-    
+
     return {
         'total': len(WRITE_TESTS),
         'passed': passed,

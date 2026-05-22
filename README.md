@@ -95,9 +95,9 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 **仍需本补丁集的修复**：
 - Memory Metacognition Framework（预检门控 + 策略路由）
 - 记忆检索与披露已验证部分 / 实验辅助模块
-- Memory Graph 工具集（15 个工具）
+- Memory Graph 工具集（14 个工具）
 - 混合技能选择器（3 层筛选）
-- Skill Evaluation Gate（代码级强制）
+- Skill Evaluation Gate（实验/未完全验证，不作为稳定能力宣传）
 - Hindsight Reranker / Access Tracker
 - Shadow Write Logger
 - CJK 搜索 user_id 隔离
@@ -117,7 +117,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 ### 记忆系统
 - Memory Metacognition Framework（预检门控 + 记忆注入 + 策略路由）
 - 记忆检索与披露（已验证运行链路 + 实验辅助模块；不再夸大为完整衰减引擎）
-- Memory Graph 完整模块（db/services/web/tool，15+ 文件）
+- Memory Graph 模块（db/services/web/tool，14 个已注册工具）
 - Memory Write Pipeline（记忆写入流水线）
 - Shadow Write Logger（记忆写入审计）
 - Hindsight Reranker（搜索结果重排序）
@@ -126,7 +126,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 
 ### 技能系统
 - 混合技能选择器（3 层：正则→关键词→AI）
-- Skill Evaluation Gate（代码级强制评估）
+- Skill Evaluation Gate（实验性/未完全验证）
 - FTS5 语义技能检索
 
 ### 多用户隔离

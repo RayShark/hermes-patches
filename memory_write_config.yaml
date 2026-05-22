@@ -4,10 +4,10 @@
 memory_write:
   # Mode: shadow | limited_auto | full_auto
   mode: shadow
-  
+
   # Minimum importance score for auto-write (only used in limited_auto/full_auto)
   auto_write_threshold: 0.85
-  
+
   # Types allowed for automatic writing (no review required)
   allowed_auto_types:
     - user_fact           # 明确用户事实 (成绩/年龄/考试)
@@ -15,26 +15,26 @@ memory_write:
     - task                # 明确任务 (明天检查部署)
     - explicit_preference # 明确长期偏好 (用户直接说)
     - explicit_correction # 明确纠错 (不是85是83)
-  
+
   # Types that always require review
   always_review_types:
     - inferred_preference # Agent推断的偏好
     - sensitive_rule      # 敏感规则 (跳过确认/绕过检查)
     - hindsight_import    # 从Hindsight导入的候选
     - low_confidence_fact # 低置信事实 (< 0.70)
-  
+
   # Never auto-write to core namespace
   never_auto_write_to_core: true
-  
+
   # MEMORY.md size limit
   memory_md_max_bytes: 5000
-  
+
   # Shadow mode settings
   shadow:
     log_dir: ~/.hermes/logs/shadow_writes
     max_entries_per_day: 1000
     enable_readback_dryrun: true
-  
+
   # Quality thresholds to pass shadow mode
   quality_thresholds:
     precision_min: 0.85

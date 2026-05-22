@@ -56,7 +56,7 @@ canvas#bg{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0}
       <div class="error" id="error"></div>
     </form>
   </div>
-  <div class="foot">mg.bz9.me</div>
+  <div class="foot">Memory Graph</div>
 </div>
 <script>
 (function(){

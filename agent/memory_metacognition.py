@@ -1112,7 +1112,7 @@ class ConversationRecall:
 
     Example: user says "你买蓝牙键盘"
     - Entities extracted: ["蓝牙键盘", "键盘"]
-    - Hindsight finds: "左灏购买了罗技K380蓝牙键盘"
+    - Hindsight finds: "用户购买了某型号蓝牙键盘"
     - Injected into context for the model
     """
 
@@ -1229,9 +1229,13 @@ class MemoryRouter:
         import re as _re
         text = user_input.lower()
         entities = []
-        for ent in ['左灏', 'nitrogen', 'steven', 'beibei', 'dse', 'telegram', 'hermes', 'hindsight']:
-            if ent in text:
-                entities.append(ent)
+        # Extract generic entities instead of hardcoding deployment-specific
+        # user/project names. Deployment-specific aliases can be handled by the
+        # memory index or disclosure_rules.yaml.
+        for ent in _extract_entities(user_input, max_entities=8):
+            ent_l = ent.lower()
+            if ent_l not in entities:
+                entities.append(ent_l)
         # Check for compound intent (operation + entity) FIRST
                 # Check for inventory query
         _inv_patterns = ['记得哪些', '记得什么', '有哪些记忆', '知道哪些', '记忆类别', '有哪些信息']

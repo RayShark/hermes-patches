@@ -19,7 +19,7 @@ if [ ! -e "$HERMES_DIR/toolsets.py" ] && [ -d "$DEFAULT_HERMES_DIR" ]; then
 fi
 
 echo "🔧 Hermes 社区补丁合集 v18"
-echo "   适配版本：v0.14.0+ (v2026.5.16+) + verified upstream d3f62c691"
+echo "   适配版本：v0.14.0+ (v2026.5.16+) + verified upstream d61785889"
 echo "   补丁目录：$PATCHES_DIR"
 echo "   Hermes目录：$HERMES_DIR"
 echo ""
@@ -202,7 +202,7 @@ if '"memory_graph": {' not in text:
         ],
         "includes": []
     },
-    
+
 '''
     marker = '    "session_search": {'
     if marker not in text:

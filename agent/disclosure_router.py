@@ -31,53 +31,37 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Default disclosure rules embedded as fallback
+# Default disclosure rules embedded as fallback.
+# Keep these generic: deployment-specific triggers belong in
+# ~/.hermes/disclosure_rules.yaml, not in an open-source patch.
 _DEFAULT_RULES = [
     {
-        "name": "linuxdo",
-        "patterns": ["linux.do", "linuxdo", "LinuxDo"],
-        "query": "linuxdo cloudflare camoufox bypass cookie",
-        "priority": 10,
-    },
-    {
-        "name": "hermes-agent-dev",
-        "patterns": ["hermes agent", "hermes-agent", "gateway", "补丁", "patch", "hermes update"],
-        "query": "hermes agent patch gateway update branch",
+        "name": "agent-development",
+        "patterns": ["agent", "gateway", "patch", "update", "配置", "补丁", "更新"],
+        "query": "agent gateway patch update configuration",
         "priority": 8,
     },
     {
-        "name": "beibei-project",
-        "patterns": ["beibei", "不背不背", "题库", "DSE"],
-        "query": "beibei DSE question bank deploy",
-        "priority": 8,
-    },
-    {
-        "name": "telegram-delivery",
-        "patterns": ["发文件", "send file", "telegram", "sendDocument"],
-        "query": "telegram file delivery sendDocument curl",
+        "name": "file-delivery",
+        "patterns": ["send file", "file delivery", "发文件", "sendDocument"],
+        "query": "file delivery messaging platform attachment",
         "priority": 7,
     },
     {
-        "name": "user-identity",
-        "patterns": ["Steven", "左灏", "姚宗宏", "Nitrogen"],
-        "query": "user identity Steven Nitrogen 左灏 姚宗宏",
-        "priority": 9,
-    },
-    {
-        "name": "cron-management",
-        "patterns": ["cron", "定时任务", "cronjob", "scheduled"],
-        "query": "cron job scheduled task delivery",
+        "name": "scheduled-tasks",
+        "patterns": ["cron", "scheduled", "定时任务", "任务调度"],
+        "query": "scheduled task cron job delivery",
         "priority": 6,
     },
     {
         "name": "vision-image",
-        "patterns": ["看图", "图片", "image", "screenshot", "截图", "vision"],
-        "query": "vision image analysis screenshot mimo",
+        "patterns": ["image", "screenshot", "vision", "看图", "图片", "截图"],
+        "query": "vision image analysis screenshot",
         "priority": 5,
     },
     {
         "name": "memory-system",
-        "patterns": ["记忆", "memory", "hindsight", "元认知", "metacognition"],
+        "patterns": ["memory", "hindsight", "metacognition", "记忆", "元认知"],
         "query": "memory hindsight metacognition recall retain",
         "priority": 9,
     },
@@ -145,16 +129,18 @@ class DisclosureRouter:
                 import yaml
                 with open(path) as f:
                     data = yaml.safe_load(f)
-                if data and "rules" in data:
-                    for r in data["rules"]:
+                if data:
+                    for r in data.get("rules", []):
                         self.rules.append(DisclosureRule(
                             name=r.get("name", "unnamed"),
                             patterns=r.get("patterns", []),
                             query=r.get("query", ""),
                             priority=r.get("priority", 5),
                     ))
-                    logger.info("DisclosureRouter: loaded %d rules from %s", len(self.rules), path)
-                    return
+                    self.BLOCKED_COMBINATIONS = list(data.get("tool_blocks", []))
+                    if self.rules:
+                        logger.info("DisclosureRouter: loaded %d rules from %s", len(self.rules), path)
+                        return
             except Exception as e:
                 logger.warning("DisclosureRouter: failed to load %s: %s", path, e)
 
@@ -292,16 +278,14 @@ class DisclosureRouter:
     # Tool-call Interceptor — block known failure patterns
     # =========================================================================
 
-    # Maps (tool_name, arg_pattern) → (reason, alternative)
-    # arg_pattern is a regex matched against json.dumps of the tool arguments
-    BLOCKED_COMBINATIONS = [
-        {
-            "tool": "browser_navigate",
-            "url_pattern": r"linux\.do|linuxdo",
-            "reason": "linux.do uses Cloudflare protection. browser_navigate gets blocked.",
-            "alternative": "Use camoufox (Python) to open the page with anti-detection, or use curl for JSON API (.json endpoint).",
-        },
-    ]
+    # Optional deployment-specific tool-call blocks loaded from config.
+    # Example ~/.hermes/disclosure_rules.yaml:
+    # tool_blocks:
+    #   - tool: browser_navigate
+    #     url_pattern: "example\.com"
+    #     reason: "This site requires a special browser profile."
+    #     alternative: "Use the configured browser profile or an official API."
+    BLOCKED_COMBINATIONS = []
 
     def check_tool_call(self, tool_name: str, tool_args: dict) -> Optional[str]:
         """

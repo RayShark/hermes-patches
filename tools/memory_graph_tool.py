@@ -149,14 +149,14 @@ def _create(args, **kw):
     domain, parent_path = _parse_uri(parent_uri, args.get("domain", "core"))
     ns = args.get("namespace") or _get_namespace()
     content = args["content"]
-    
+
     # Zero-default: user data MUST have namespace
     try:
         from agent.request_context import require_namespace_for_path
         ns = require_namespace_for_path(parent_path) or ns
     except ValueError as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
-    
+
     result = _run(GraphService().create_memory(
         parent_path, content, priority=args.get("priority", 0),
         title=args.get("title") or None, domain=domain, namespace=ns,
