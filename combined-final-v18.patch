@@ -164,7 +164,7 @@ index fdf65c075..454467b75 100644
 @@ -4149,6 +4158,53 @@ def run_conversation(
          interrupted=interrupted,
      )
- 
+
 +    # ─── Memory Write Pipeline: Shadow Mode ───────────────────────
 +    # After each turn, run memory_reflection in shadow mode.
 +    # Logs proposed writes without actually writing to Graph.
@@ -679,14 +679,14 @@ index 000000000..d122463c0
 +    """Rerank Hindsight recall results based on intent and memory type."""
 +    if not results:
 +        return results
-+    
++
 +    weights = _TYPE_WEIGHTS.get(intent, _TYPE_WEIGHTS['fact_lookup'])
-+    
++
 +    for r in results:
 +        text = r.get('text', '') if isinstance(r, dict) else getattr(r, 'text', '')
 +        mtype = detect_memory_type(text)
 +        weight = weights.get(mtype, 1.0)
-+        
++
 +        # Store original score if available
 +        if isinstance(r, dict):
 +            original_score = r.get('score', 1.0)
@@ -697,13 +697,13 @@ index 000000000..d122463c0
 +            if not hasattr(r, '_original_score'):
 +                r._original_score = getattr(r, 'score', 1.0)
 +            r.score = r._original_score * weight
-+    
++
 +    # Sort by rerank score
 +    if isinstance(results[0], dict):
 +        results.sort(key=lambda r: r.get('_rerank_score', 0), reverse=True)
 +    else:
 +        results.sort(key=lambda r: getattr(r, 'score', 0), reverse=True)
-+    
++
 +    return results
 diff --git a/agent/memory_graph/__init__.py b/agent/memory_graph/__init__.py
 new file mode 100644
@@ -6559,7 +6559,7 @@ index c9abc48c7..c4c1c9d87 100644
 +        bank/session scoping so group replies cannot read a sender's private
 +        memory bank.
          """
- 
+
      def system_prompt_block(self) -> str:
 diff --git a/agent/memory_write_pipeline.py b/agent/memory_write_pipeline.py
 new file mode 100644
@@ -6695,19 +6695,19 @@ index 000000000..cc2c3ee10
 +
 +class MemoryWritePipeline:
 +    """Orchestrates automatic memory writing."""
-+    
++
 +    def __init__(self, graph_client=None, hindsight_client=None):
 +        self.graph = graph_client
 +        self.hindsight = hindsight_client
 +        self._write_log = []
-+    
++
 +    def reflect_and_extract(self, user_msg: str, assistant_msg: str) -> Dict[str, Any]:
 +        """Generate memory reflection from a conversation turn."""
 +        combined = f"{user_msg} {assistant_msg}"
 +        mtype, importance = score_importance(combined)
-+        
++
 +        candidates = []
-+        
++
 +        # Extract user corrections
 +        correction_patterns = [
 +            r'不是\s*(\d+)\s*[,，]?\s*是\s*(\d+)',
@@ -6727,7 +6727,7 @@ index 000000000..cc2c3ee10
 +                    evidence_quote=user_msg, confidence=0.95,
 +                    source_type='user_correction', reason='User corrected a fact'
 +                ))
-+        
++
 +        # Extract rules
 +        rule_patterns = [
 +            r'以后.*?不要.*?用\s*(\S+)',
@@ -6752,7 +6752,7 @@ index 000000000..cc2c3ee10
 +                    requires_review=is_sensitive,
 +                    reason='Sensitive rule requires review' if is_sensitive else 'User stated a rule'
 +                ))
-+        
++
 +        # Extract facts with entity + attribute
 +        entity_patterns = [
 +            (r'(左灏|Steven|Nitrogen|beibei|DSE)', 'entity'),
@@ -6760,7 +6760,7 @@ index 000000000..cc2c3ee10
 +        for pattern, etype in entity_patterns:
 +            if re.search(pattern, combined):
 +                entity_name = re.search(pattern, combined).group(1)
-+                
++
 +                # Check for specific fact types
 +                if re.search(r'(成绩|分数|考试|mock)', combined):
 +                    score_match = re.search(r'(\d+)\s*分', combined)
@@ -6774,7 +6774,7 @@ index 000000000..cc2c3ee10
 +                        evidence_quote=user_msg, confidence=0.90,
 +                        source_type='user_direct'
 +                    ))
-+                
++
 +                # Check for project facts (技术栈/部署/数据库/配置)
 +                if re.search(r'(技术栈|部署|数据库|配置|服务器|架构|用|换成|改成|迁移)', combined):
 +                    # Extract the value after the keyword
@@ -6789,7 +6789,7 @@ index 000000000..cc2c3ee10
 +                        evidence_quote=user_msg, confidence=0.90,
 +                        source_type='user_direct'
 +                    ))
-+        
++
 +
 +        # Extract preferences
 +        pref_patterns = [
@@ -6812,7 +6812,7 @@ index 000000000..cc2c3ee10
 +                    source_type='agent_inference' if is_inference else 'user_direct',
 +                    requires_review=is_inference,
 +                ))
-+        
++
 +        # Extract tasks
 +        task_patterns = [
 +            r'明天.*?(检查|部署|修复|确认)',
@@ -6830,7 +6830,7 @@ index 000000000..cc2c3ee10
 +                    evidence_quote=user_msg, confidence=0.85,
 +                    source_type='user_direct'
 +                ))
-+        
++
 +        # Deduplicate overlapping regex hits while preserving order. This prevents
 +        # one correction such as "不是85，是83" from generating duplicate write
 +        # candidates via multiple correction patterns.
@@ -6850,17 +6850,17 @@ index 000000000..cc2c3ee10
 +            'memory_type': mtype,
 +            'evidence': user_msg[:200],
 +        }
-+    
++
 +    def classify_write(self, candidate: CandidateFact, existing_facts: List[Dict] = None, namespace: str = "") -> Dict[str, Any]:
 +        """Apply 5 gates to determine if and where to write."""
 +        existing = existing_facts or []
-+        
++
 +        # Gate 1: Importance
 +        if candidate.importance < 0.40:
 +            return {'action': 'ignore', 'reason': 'Low importance'}
-+        
++
 +        # Gate 2: Type (already classified)
-+        
++
 +        # Gate 3: Conflict
 +        conflict_uri = detect_conflict(candidate, existing)
 +        if conflict_uri:
@@ -6872,11 +6872,11 @@ index 000000000..cc2c3ee10
 +                'reason': f'Conflicts with existing fact: {conflict_uri}',
 +                'conflict_with': conflict_uri
 +            }
-+        
++
 +        # Gate 4: Dedup
 +        candidate.dedup_key = make_dedup_key(candidate)
 +        # (dedup check would query existing facts)
-+        
++
 +        # Gate 5: Review
 +        if candidate.source_type == 'agent_inference':
 +            candidate.requires_review = True
@@ -6886,19 +6886,19 @@ index 000000000..cc2c3ee10
 +        if any(p in candidate.object_value for p in sensitive_patterns):
 +            candidate.requires_review = True
 +            return {'action': 'review', 'target_store': 'review', 'reason': 'Sensitive rule requires review'}
-+        
++
 +        # Determine target store
 +        target = route_target(candidate.memory_type, candidate.importance,
 +                             candidate.memory_type == 'rule')
-+        
++
 +        # Override if candidate already has a target (from extraction)
 +        if candidate.target_store and candidate.target_store != 'ignore':
 +            target = candidate.target_store
-+        
++
 +        # If requires_review, override target to review queue
 +        if candidate.requires_review:
 +            target = 'review'
-+        
++
 +        return {
 +            'action': 'write',
 +            'target_store': target,
@@ -6907,7 +6907,7 @@ index 000000000..cc2c3ee10
 +            'dedup_key': candidate.dedup_key,
 +            'namespace': namespace or candidate.namespace,
 +        }
-+    
++
 +    def write_and_verify(self, candidate: CandidateFact, classification: Dict) -> Dict[str, Any]:
 +        """Write to target store and verify readback."""
 +        result = {
@@ -6918,17 +6918,17 @@ index 000000000..cc2c3ee10
 +            'readback_ok': False,
 +            'readback_queries': [],
 +        }
-+        
++
 +        if classification.get('action') != 'write':
 +            return result
-+        
++
 +        # Generate readback queries
 +        result['readback_queries'] = generate_readback_queries(candidate)
-+        
++
 +        # Actual write would happen here
 +        # For now, return the plan
 +        result['written'] = True  # placeholder
-+        
++
 +        return result
 +
 +# ─── Write Regression Test Suite ──────────────────────────────────
@@ -7031,11 +7031,11 @@ index 000000000..cc2c3ee10
 +    pipeline = MemoryWritePipeline()
 +    results = []
 +    passed = 0
-+    
++
 +    for test in WRITE_TESTS:
 +        reflection = pipeline.reflect_and_extract(test['input'], '')
 +        candidates = reflection.get('candidates', [])
-+        
++
 +        if not candidates:
 +            # No candidate extracted
 +            mtype, importance = score_importance(test['input'])
@@ -7060,38 +7060,38 @@ index 000000000..cc2c3ee10
 +                'action': classification.get('action'),
 +                'requires_review': candidate.requires_review,
 +            }
-+        
++
 +        # Check expectations
 +        checks = []
-+        
++
 +        if 'expect_type' in test:
 +            ok = result.get('type') == test['expect_type']
 +            checks.append(('type', ok, f"got {result.get('type')}"))
-+        
++
 +        if 'expect_target' in test:
 +            ok = result.get('target') == test['expect_target']
 +            checks.append(('target', ok, f"got {result.get('target')}"))
-+        
++
 +        if 'expect_importance_min' in test:
 +            ok = result.get('importance', 0) >= test['expect_importance_min']
 +            checks.append(('importance_min', ok, f"got {result.get('importance')}"))
-+        
++
 +        if 'expect_importance_max' in test:
 +            ok = result.get('importance', 1) <= test['expect_importance_max']
 +            checks.append(('importance_max', ok, f"got {result.get('importance')}"))
-+        
++
 +        if 'expect_requires_review' in test:
 +            ok = result.get('requires_review') == test['expect_requires_review']
 +            checks.append(('requires_review', ok, f"got {result.get('requires_review')}"))
-+        
++
 +        all_pass = all(c[1] for c in checks) if checks else False
 +        if all_pass:
 +            passed += 1
-+        
++
 +        result['checks'] = checks
 +        result['passed'] = all_pass
 +        results.append(result)
-+    
++
 +    return {
 +        'total': len(WRITE_TESTS),
 +        'passed': passed,
@@ -7103,8 +7103,8 @@ index 9c36d205a..029eb0f82 100644
 +++ b/agent/prompt_builder.py
 @@ -1423,6 +1423,36 @@ def _load_cursorrules(cwd_path: Path) -> str:
      return _truncate_content(cursorrules_content, ".cursorrules")
- 
- 
+
+
 +
 +
 +def expand_recall_queries(user_message: str, user_context: dict = None) -> list[str]:
@@ -7137,7 +7137,7 @@ index 9c36d205a..029eb0f82 100644
 +
  def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
      """Discover and load context files for the system prompt.
- 
+
 diff --git a/agent/request_context.py b/agent/request_context.py
 new file mode 100644
 index 000000000..38a2dfc11
@@ -7166,7 +7166,7 @@ index 000000000..38a2dfc11
 +    namespace: str = ""
 +    session_id: str = ""
 +    is_admin: bool = False
-+    
++
 +    @property
 +    def effective_namespace(self) -> str:
 +        """Get the namespace to use for writes. Never returns empty for user data."""
@@ -7212,7 +7212,7 @@ index 000000000..38a2dfc11
 +
 +def require_namespace_for_path(path: str) -> str:
 +    """Get namespace for a path, raising if user data has no namespace.
-+    
++
 +    Zero-default principle: user data MUST have namespace.
 +    """
 +    if is_user_private_path(path):
@@ -7274,7 +7274,7 @@ index 000000000..6bea8c1ca
 +        "actually_written": False,
 +        "mode": mode,
 +    }
-+    
++
 +    for c in candidates:
 +        write_action = {
 +            "memory_type": c.get("memory_type", "unknown"),
@@ -7289,27 +7289,27 @@ index 000000000..6bea8c1ca
 +            "dedup_key": c.get("dedup_key", ""),
 +        }
 +        entry["candidate_writes"].append(write_action)
-+        
++
 +        target = c.get("target_store", "ignore")
 +        importance = c.get("importance", 0)
-+        
++
 +        if target == "review" or c.get("requires_review"):
 +            entry["would_review"] = True
 +        elif target == "ignore" or importance < 0.40:
 +            entry["would_ignore"] = True
 +        elif importance >= 0.40:
 +            entry["would_write"] = True
-+    
++
 +    # Append to daily log file
 +    date_str = datetime.now().strftime("%Y-%m-%d")
 +    log_file = os.path.join(_SHADOW_LOG_DIR, f"shadow_{date_str}.jsonl")
-+    
++
 +    with open(log_file, "a") as f:
 +        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-+    
++
 +    logger.debug("Shadow write logged: %d candidates, would_write=%s",
 +                 len(candidates), entry["would_write"])
-+    
++
 +    return entry
 +
 +
@@ -7318,14 +7318,14 @@ index 000000000..6bea8c1ca
 +    subject = candidate.get("subject", "")
 +    predicate = candidate.get("predicate", "")
 +    obj = candidate.get("object_value", "")
-+    
++
 +    queries = []
-+    
++
 +    if subject and predicate:
 +        queries.append(f"{subject} {predicate}")
 +    if subject and obj:
 +        queries.append(f"{subject} {obj[:20]}")
-+    
++
 +    # Type-specific queries
 +    mtype = candidate.get("memory_type", "")
 +    if mtype == "user_fact":
@@ -7343,7 +7343,7 @@ index 000000000..6bea8c1ca
 +    elif mtype == "rule":
 +        queries.append(f"操作规则")
 +        queries.append(f"注意事项")
-+    
++
 +    return queries[:3]  # Max 3 queries
 +
 +
@@ -7351,24 +7351,24 @@ index 000000000..6bea8c1ca
 +    """Get comprehensive shadow write statistics for a date."""
 +    if not date_str:
 +        date_str = datetime.now().strftime("%Y-%m-%d")
-+    
++
 +    log_file = os.path.join(_SHADOW_LOG_DIR, f"shadow_{date_str}.jsonl")
 +    if not os.path.exists(log_file):
 +        return {"date": date_str, "entries": 0}
-+    
++
 +    entries = []
 +    with open(log_file) as f:
 +        for line in f:
 +            line = line.strip()
 +            if line:
 +                entries.append(json.loads(line))
-+    
++
 +    # Aggregate statistics
 +    total_candidates = sum(len(e.get("candidate_writes", [])) for e in entries)
 +    would_write = sum(1 for e in entries if e.get("would_write"))
 +    would_review = sum(1 for e in entries if e.get("would_review"))
 +    would_ignore = sum(1 for e in entries if e.get("would_ignore"))
-+    
++
 +    by_type = {}
 +    by_target = {}
 +    importance_scores = []
@@ -7379,45 +7379,45 @@ index 000000000..6bea8c1ca
 +    unknown_namespace = 0
 +    core_write_attempts = 0
 +    md_write_attempts = 0
-+    
++
 +    seen_dedup_keys = set()
-+    
++
 +    for e in entries:
 +        ns = e.get("namespace", "")
 +        if not ns or ns == "":
 +            unknown_namespace += 1
-+        
++
 +        for c in e.get("candidate_writes", []):
 +            mtype = c.get("memory_type", "unknown")
 +            target = c.get("target_store", "ignore")
 +            importance = c.get("importance_score", 0)
-+            
++
 +            by_type[mtype] = by_type.get(mtype, 0) + 1
 +            by_target[target] = by_target.get(target, 0) + 1
 +            importance_scores.append(importance)
-+            
++
 +            if importance >= 0.85:
 +                high_confidence += 1
 +            elif importance < 0.50:
 +                low_confidence += 1
-+            
++
 +            # Dedup check
 +            dedup_key = c.get("dedup_key", "")
 +            if dedup_key:
 +                if dedup_key in seen_dedup_keys:
 +                    duplicate_candidates += 1
 +                seen_dedup_keys.add(dedup_key)
-+            
++
 +            # Core write check
 +            if target == "memory_graph" and "core://" in c.get("target_path", ""):
 +                core_write_attempts += 1
-+            
++
 +            # MD write check
 +            if target == "memory_md":
 +                md_write_attempts += 1
-+    
++
 +    avg_importance = sum(importance_scores) / len(importance_scores) if importance_scores else 0
-+    
++
 +    # Generate readback queries for top candidates
 +    readback_candidates = []
 +    for e in entries:
@@ -7430,7 +7430,7 @@ index 000000000..6bea8c1ca
 +                    "readback_queries": queries,
 +                    "target_path": c.get("target_path"),
 +                })
-+    
++
 +    return {
 +        "date": date_str,
 +        "entries": len(entries),
@@ -7459,7 +7459,7 @@ index bc29c9ef8..4d2565a1b 100644
 @@ -237,6 +237,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
          if context_files_prompt:
              context_parts.append(context_files_prompt)
- 
+
 +        # Memory Metacognition — inject memory index block for fast reference
 +        try:
 +            from agent.prompt_builder import build_memory_index_block
@@ -7473,7 +7473,7 @@ index bc29c9ef8..4d2565a1b 100644
 +
      # ── Volatile tier (changes per session/turn — never cached) ───
      volatile_parts: List[str] = []
- 
+
 diff --git a/agent/tool_executor.py b/agent/tool_executor.py
 index b161b507e..9324dcd8e 100644
 --- a/agent/tool_executor.py
@@ -7545,9 +7545,9 @@ index 799a836df..fdef50328 100644
 -from typing import Dict, List, Optional, Any
 +from typing import Dict, List, Optional, Any, Deque
 +from collections import deque
- 
+
  logger = logging.getLogger(__name__)
- 
+
 @@ -425,6 +426,7 @@ class TelegramAdapter(BasePlatformAdapter):
          )
          self._pending_text_batches: Dict[str, MessageEvent] = {}
@@ -7559,7 +7559,7 @@ index 799a836df..fdef50328 100644
 @@ -4223,6 +4225,33 @@ class TelegramAdapter(BasePlatformAdapter):
              return {str(part).strip() for part in raw if str(part).strip()}
          return {part.strip() for part in str(raw).split(",") if part.strip()}
- 
+
 +    def _telegram_history_backfill(self) -> bool:
 +        """Return whether group trigger messages should fetch recent chat context."""
 +        configured = self.config.extra.get("history_backfill")
@@ -7589,11 +7589,11 @@ index 799a836df..fdef50328 100644
 +
      def _telegram_allowed_chats(self) -> set[str]:
          """Return the whitelist of group/supergroup chat IDs the bot will respond in.
- 
+
 @@ -4629,6 +4658,161 @@ class TelegramAdapter(BasePlatformAdapter):
              adapter_name = getattr(self, "name", "telegram")
              logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
- 
+
 +    def _should_capture_channel_context(self, message: Message) -> bool:
 +        """Return True when this trigger should receive recent group context."""
 +        if not self._telegram_history_backfill():
@@ -7751,7 +7751,7 @@ index 799a836df..fdef50328 100644
 +
      def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
          """Apply Telegram group trigger rules.
- 
+
 @@ -4752,7 +4936,9 @@ class TelegramAdapter(BasePlatformAdapter):
          msg = self._effective_update_message(update)
          if not msg or not msg.text:
@@ -7766,7 +7766,7 @@ index 799a836df..fdef50328 100644
 @@ -5530,6 +5716,10 @@ class TelegramAdapter(BasePlatformAdapter):
              message_id=str(message.message_id),
          )
-         
+
 +        channel_context = None
 +        if self._should_capture_channel_context(message):
 +            channel_context = self._build_channel_context_for_trigger(message)
@@ -7781,7 +7781,7 @@ index 799a836df..fdef50328 100644
 +            channel_context=channel_context,
              timestamp=message.date,
          )
- 
+
 diff --git a/hermes_cli/auth.py b/hermes_cli/auth.py
 index 59daa2c5d..cd994efab 100644
 --- a/hermes_cli/auth.py
@@ -7815,7 +7815,7 @@ index 7d28ce076..ed754107f 100644
 @@ -1358,7 +1358,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
              "has_refresh_token": bool(cc_creds.get("refreshToken")),
          }
- 
+
 -    env_token = os.getenv("ANTHROPIC_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
 +    env_token = os.getenv("ANTHROPIC_TOKEN")
      if env_token:
@@ -7832,7 +7832,7 @@ index 580443719..6da3238ec 100644
 +        user_id: str = None,
      ) -> List[Dict[str, Any]]:
          """List sessions with preview (first user message) and last active timestamp.
- 
+
 @@ -1234,6 +1235,9 @@ class SessionDB:
              placeholders = ",".join("?" for _ in exclude_sources)
              where_clauses.append(f"s.source NOT IN ({placeholders})")
@@ -7840,7 +7840,7 @@ index 580443719..6da3238ec 100644
 +        if user_id is not None:
 +            where_clauses.append("s.user_id = ?")
 +            params.append(user_id)
- 
+
          where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
          if order_by_last_active:
 @@ -2119,6 +2123,7 @@ class SessionDB:
@@ -7854,14 +7854,14 @@ index 580443719..6da3238ec 100644
 @@ -2186,6 +2191,10 @@ class SessionDB:
              where_clauses.append(f"m.role IN ({role_placeholders})")
              params.extend(role_filter)
- 
+
 +        if user_id is not None:
 +            where_clauses.append("s.user_id = ?")
 +            params.append(user_id)
 +
          where_sql = " AND ".join(where_clauses)
          params.extend([limit, offset])
- 
+
 @@ -2258,6 +2267,9 @@ class SessionDB:
                  if role_filter:
                      tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
@@ -7888,7 +7888,7 @@ index c1a719f91..e07856661 100644
 +++ b/plugins/image_gen/openai/__init__.py
 @@ -223,7 +223,20 @@ class OpenAIImageGenProvider(ImageGenProvider):
          }
- 
+
          try:
 -            client = openai.OpenAI()
 +            client_kwargs: Dict[str, Any] = {}
@@ -7915,7 +7915,7 @@ index 40772f79d..7c1457e7a 100644
 @@ -1428,6 +1428,15 @@ class HindsightMemoryProvider(MemoryProvider):
              logger.debug("sync_turn: skipped (shutting down)")
              return
- 
+
 +        # Skip retain for platforms whose messages cannot be attributed to
 +        # real users (e.g. iLink WeChat bot reports all messages as bot's own
 +        # from_user_id).  Set HINDSIGHT_SKIP_PLATFORMS="weixin,other" to
@@ -7927,11 +7927,11 @@ index 40772f79d..7c1457e7a 100644
 +
          if session_id:
              self._session_id = str(session_id).strip()
- 
+
 @@ -1490,6 +1499,119 @@ class HindsightMemoryProvider(MemoryProvider):
          self._register_atexit()
          self._retain_queue.put(_do_retain)
- 
+
 +    def _hindsight_text_fallback(self, query: str, limit: int = 5) -> str:
 +        """Fallback recall when the embedding provider is unavailable.
 +
@@ -8060,7 +8060,7 @@ index 40772f79d..7c1457e7a 100644
 +                ):
 +                    return self._hindsight_text_fallback(query)
                  return tool_error(f"Failed to search memory: {e}")
- 
+
          elif tool_name == "hindsight_reflect":
 diff --git a/scripts/mg_users.py b/scripts/mg_users.py
 new file mode 100644
@@ -8713,14 +8713,14 @@ index 000000000..c94c49cb0
 +    domain, parent_path = _parse_uri(parent_uri, args.get("domain", "core"))
 +    ns = args.get("namespace") or _get_namespace()
 +    content = args["content"]
-+    
++
 +    # Zero-default: user data MUST have namespace
 +    try:
 +        from agent.request_context import require_namespace_for_path
 +        ns = require_namespace_for_path(parent_path) or ns
 +    except ValueError as e:
 +        return json.dumps({"error": str(e)}, ensure_ascii=False)
-+    
++
 +    result = _run(GraphService().create_memory(
 +        parent_path, content, priority=args.get("priority", 0),
 +        title=args.get("title") or None, domain=domain, namespace=ns,
@@ -9112,13 +9112,13 @@ index 65b9d32f1..5972f6d3c 100644
  # so they don't clutter the user's session history.
 -_HIDDEN_SESSION_SOURCES = ("tool",)
 +_HIDDEN_SESSION_SOURCES = ("tool", "weixin")
- 
- 
+
+
  def _format_timestamp(ts: Union[int, float, str, None]) -> str:
 @@ -107,11 +107,13 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
      return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
- 
- 
+
+
 -def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
 +def _list_recent_sessions(db, limit: int, current_session_id: str = None, user_id: str = None, source: str = None) -> str:
      """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
@@ -9138,7 +9138,7 @@ index 65b9d32f1..5972f6d3c 100644
 +    source: str = None,
  ) -> str:
      """Scroll shape: return a window of messages centered on an anchor.
- 
+
 @@ -281,6 +285,8 @@ def _discover(
      limit: int,
      sort: Optional[str],
@@ -9165,14 +9165,14 @@ index 65b9d32f1..5972f6d3c 100644
 +    source: str = None,
  ) -> str:
      """Single-shape tool. Mode inferred from which args are set.
- 
+
 @@ -426,7 +436,7 @@ def session_search(
- 
+
      # Browse shape: no query → recent sessions.
      if not query or not isinstance(query, str) or not query.strip():
 -        return _list_recent_sessions(db, limit, current_session_id)
 +        return _list_recent_sessions(db, limit, current_session_id, user_id=user_id, source=source)
- 
+
      # Parse role_filter
      role_list: Optional[List[str]] = None
 @@ -447,6 +457,8 @@ def session_search(
@@ -9182,8 +9182,8 @@ index 65b9d32f1..5972f6d3c 100644
 +        user_id=user_id,
 +        source=source,
      )
- 
- 
+
+
 diff --git a/toolsets.py b/toolsets.py
 index 5de07e4c7..a00fe4caa 100644
 --- a/toolsets.py
@@ -9204,7 +9204,7 @@ index 5de07e4c7..a00fe4caa 100644
 @@ -206,6 +212,18 @@ TOOLSETS = {
          "includes": []
      },
-     
+
 +    "memory_graph": {
 +        "description": "URI-tree structured memory graph (search, create, update, delete, list, alias, glossary)",
 +        "tools": [
@@ -9216,7 +9216,7 @@ index 5de07e4c7..a00fe4caa 100644
 +        ],
 +        "includes": []
 +    },
-+    
++
      "session_search": {
          "description": "Search and recall past conversations with summarization",
          "tools": ["session_search"],

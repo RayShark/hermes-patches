@@ -25,7 +25,7 @@
 - **谨慎表述**：`disclosure_router.py`、access tracker/reranker 等辅助模块可能作为 overlay 存在；只有经过 import+调用链+端到端验证的路径才算运行功能。
 - **不再夸大**：不声称存在完整自动“记忆衰减引擎”或所有记忆自动注入 system prompt，除非对应运行链路被验证。
 
-**🧠 Memory Graph 工具集（15 个工具）**
+**🧠 Memory Graph 工具集（14 个工具）**
 结构化长期记忆系统，替代 Hindsight 盲搜：
 - `memory_graph_search` — 全文搜索记忆节点
 - `memory_graph_read/create/update/delete` — CRUD 操作
@@ -36,7 +36,6 @@
 - `memory_graph_orphans/purge` — 清理管理
 - `memory_graph_diagnostics` — 系统诊断
 - `memory_graph_random` — 随机记忆
-- `memory_graph_manage_triggers` — 触发词绑定
 
 **⚡ 混合技能选择器（3 层筛选）**
 原版每次对话把所有技能描述塞进 system prompt，浪费大量 token。3 层筛选：
@@ -45,10 +44,10 @@
 - **Layer 3 AI 推理**：仅在前两层不足时调用 LLM
 - 80% 日常对话完全跳过技能加载，强制选中特定技能时也可直接指定
 
-**🛡️ 技能评估门控 + 合规检查**
-- **Skill Evaluation Gate**：代码级强制——agent 必须先调用 `skill_view()` 评估相关技能，才能执行 terminal/write_file/patch 等操作工具
-- **skill-enforcer 插件**：每 N 次工具调用触发合规检查点，验证 agent 是否遵循已加载的技能规则
-- **Fact Verification Gate**：扫描响应中的未验证声明（价格、数字、产品），触发验证请求
+**🛡️ 技能评估门控 + 合规检查（实验/未完全验证）**
+- **Skill Evaluation Gate**：概念上要求 agent 在关键操作前评估相关技能；当前只能保证 `skill_view()` 可用，不能宣称已在所有路径强制生效。
+- **skill-enforcer 插件**：曾用于实验性周期检查；当前 README 不再把它写成稳定已启用能力。
+- **Fact Verification Gate**：属于构想/实验性策略，不应写成已部署功能。
 
 **🧠 长对话不失忆**
 上下文压缩不再削弱 memory 权威性。SUMMARY_PREFIX 重写为 ACTIVE/MANDATORY/BINDING 语言，你设定的规则在整个会话期间持续生效。
@@ -108,7 +107,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 
 ## 安装内容
 
-通过 `combined-final-v17.patch`（可为空/可跳过）+ overlay-first `install.sh` 安装：
+通过 `combined-final-v18.patch`（可为空/可跳过）+ overlay-first `install.sh` 安装：
 
 ### 核心架构（借鉴 Claude Code）
 - User Context / System Prompt 分离（prompt_builder.py）

@@ -27,9 +27,9 @@ echo ""
 # 1. Apply optional combined patch if it exists and is non-empty.
 # Overlay copies below are authoritative because upstream moves quickly and large
 # git patches are brittle after `hermes update`.
-PATCH_FILE="$PATCHES_DIR/combined-final-v17.patch"
+PATCH_FILE="$PATCHES_DIR/combined-final-v18.patch"
 if [ -s "$PATCH_FILE" ]; then
-    echo "📦 尝试应用 combined-final-v17.patch..."
+    echo "📦 尝试应用 combined-final-v18.patch..."
     cd "$HERMES_DIR"
     if git apply --check "$PATCH_FILE" 2>/dev/null; then
         git apply "$PATCH_FILE"
