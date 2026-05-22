@@ -8,8 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES_DIR="$SCRIPT_DIR"
 HERMES_DIR="${HERMES_HOME:-$HOME/.hermes/hermes-agent}"
 
-echo "🔧 Hermes 社区补丁合集 v17"
-echo "   适配版本：v0.14.0+ (v2026.5.16+) + upstream ba9964ff0"
+echo "🔧 Hermes 社区补丁合集 v18"
+echo "   适配版本：v0.14.0+ (v2026.5.16+) + verified upstream d3f62c691"
 echo "   补丁目录：$PATCHES_DIR"
 echo "   Hermes目录：$HERMES_DIR"
 echo ""
@@ -149,8 +149,62 @@ find "$HERMES_DIR/agent" -name "agent_runtime_helpers*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "system_prompt*.pyc" -delete 2>/dev/null
 echo "   ✅ .pyc 缓存已清理"
 
-# 7. Register memory_graph tools in toolsets
-if ! grep -q "memory_graph_search" "$HERMES_DIR/toolsets.py" 2>/dev/null; then
+# 7. Register memory_graph tools in toolsets.py without replacing upstream's file.
+# Tool discovery needs BOTH registry.register(...) in tools/memory_graph_tool.py
+# and explicit toolset/core entries here; otherwise tools silently never load.
+python3 - "$HERMES_DIR/toolsets.py" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+mg_tools = [
+    "memory_graph_read", "memory_graph_create", "memory_graph_update",
+    "memory_graph_delete", "memory_graph_list", "memory_graph_search",
+    "memory_graph_alias", "memory_graph_glossary_add", "memory_graph_glossary_scan",
+    "memory_graph_recall", "memory_graph_orphans", "memory_graph_random",
+    "memory_graph_diagnostics", "memory_graph_purge",
+]
+core_marker = '    # Session history search\n    "session_search",'
+if "memory_graph_search" not in text.split("# Session history search", 1)[0]:
+    insert = (
+        '    # Memory Graph (URI-tree structured memory)\n'
+        '    "memory_graph_read", "memory_graph_create", "memory_graph_update",\n'
+        '    "memory_graph_delete", "memory_graph_list", "memory_graph_search",\n'
+        '    "memory_graph_alias", "memory_graph_glossary_add", "memory_graph_glossary_scan",\n'
+        '    "memory_graph_recall", "memory_graph_orphans", "memory_graph_random",\n'
+        '    "memory_graph_diagnostics", "memory_graph_purge",\n'
+    )
+    if core_marker not in text:
+        raise SystemExit("toolsets.py core marker not found; cannot insert memory_graph core tools safely")
+    text = text.replace(core_marker, insert + core_marker, 1)
+
+if '"memory_graph": {' not in text:
+    entry = '''    "memory_graph": {
+        "description": "URI-tree structured memory graph (search, create, update, delete, list, alias, glossary)",
+        "tools": [
+            "memory_graph_read", "memory_graph_create", "memory_graph_update",
+            "memory_graph_delete", "memory_graph_list", "memory_graph_search",
+            "memory_graph_alias", "memory_graph_glossary_add", "memory_graph_glossary_scan",
+            "memory_graph_recall", "memory_graph_orphans", "memory_graph_random",
+            "memory_graph_diagnostics", "memory_graph_purge"
+        ],
+        "includes": []
+    },
+    
+'''
+    marker = '    "session_search": {'
+    if marker not in text:
+        raise SystemExit("toolsets.py TOOLSETS session_search marker not found; cannot insert memory_graph toolset safely")
+    text = text.replace(marker, entry + marker, 1)
+
+path.write_text(text)
+PY
+
+if grep -q "memory_graph_search" "$HERMES_DIR/toolsets.py" 2>/dev/null; then
+    echo "   ✅ memory_graph tools 已在 toolsets.py 注册"
+else
     echo "   ⚠️ memory_graph tools 未在 toolsets.py 中注册，请手动添加"
 fi
 
