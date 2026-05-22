@@ -222,7 +222,32 @@ echo ""
 echo "✅ 补丁安装完成！"
 echo "   请重启 gateway: hermes gateway restart"
 
-# 8. Copy memory-graph plugin
+
+# 8. Install and enable Memory Graph systemd service when systemd is available.
+# This keeps the HTTP dashboard/API on 127.0.0.1:8900 alive after reboot and
+# after `hermes update`. Tool calls can work in-process, but WebUI/API needs a
+# resident server.
+if command -v systemctl >/dev/null 2>&1 && [ -d "$PATCHES_DIR/systemd" ]; then
+    if [ "$(id -u)" -eq 0 ] && [ -d /etc/systemd/system ]; then
+        cp "$PATCHES_DIR/systemd/hermes-memory-graph.system.service" /etc/systemd/system/hermes-memory-graph.service
+        cp "$PATCHES_DIR/systemd/hermes-memory-stack.system.target" /etc/systemd/system/hermes-memory-stack.target
+        systemctl daemon-reload || true
+        systemctl enable hermes-memory-graph.service hermes-memory-stack.target >/dev/null 2>&1 || true
+        systemctl restart hermes-memory-graph.service >/dev/null 2>&1 || true
+        echo "   ✅ hermes-memory-graph systemd service 已安装/启动"
+    else
+        USER_SYSTEMD_DIR="$HOME/.config/systemd/user"
+        mkdir -p "$USER_SYSTEMD_DIR"
+        cp "$PATCHES_DIR/systemd/hermes-memory-graph.service" "$USER_SYSTEMD_DIR/hermes-memory-graph.service"
+        cp "$PATCHES_DIR/systemd/hermes-memory-stack.target" "$USER_SYSTEMD_DIR/hermes-memory-stack.target"
+        systemctl --user daemon-reload || true
+        systemctl --user enable hermes-memory-graph.service hermes-memory-stack.target >/dev/null 2>&1 || true
+        systemctl --user restart hermes-memory-graph.service >/dev/null 2>&1 || true
+        echo "   ✅ hermes-memory-graph user systemd service 已安装/启动"
+    fi
+fi
+
+# 9. Copy memory-graph plugin
 if [ -d "$HOME/.hermes/plugins/memory-graph" ]; then
     echo "   ✅ memory-graph plugin 已存在"
 else

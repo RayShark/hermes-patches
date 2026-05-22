@@ -45,6 +45,11 @@ def create_app(graph_service=None, search_indexer=None, glossary_service=None):
     app = FastAPI(title="Memory Graph", docs_url="/docs")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+    @app.get("/health")
+    async def health():
+        """Unauthenticated liveness endpoint for systemd/watchdogs."""
+        return {"status": "healthy", "service": "memory-graph"}
+
     # ─── Auth helpers ──────────────────────────────────────────────
     COOKIE_NAME = "mg_session"
 
