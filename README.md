@@ -19,11 +19,11 @@
 - **拦得住**：不是靠模型"自觉"，是系统在工具调用前强制检查参数（MEDIA 标签 → 阻止、gateway restart → 警告、注入模式 → 阻止）
 - 默认开启，可在 `~/.hermes/memory_policy.yaml` 中自定义或关闭
 
-**🔮 Disclosure Router + 记忆衰减引擎**
-从架构层解决"模型有记忆但不知道自己记得什么"：
-- **主动注入**：用户消息匹配触发规则后，自动从 hindsight 搜索相关记忆注入 system prompt
-- **渐进式披露**：每条记忆有 decay score（类型权重×时间衰减×召回频率），session 开头只注入 top-8 最重要的
-- **记忆版本控制**：每次 `memory(action='replace')` 前自动快照旧内容到 JSONL，支持回滚
+**🔮 记忆检索与披露（已验证部分 + 实验部分）**
+从架构层降低“有记忆但不会用”的概率：
+- **已接入**：记忆摘要/策略路由、Hindsight fallback、Memory Graph 搜索、Shadow Write 日志。
+- **谨慎表述**：`disclosure_router.py`、access tracker/reranker 等辅助模块可能作为 overlay 存在；只有经过 import+调用链+端到端验证的路径才算运行功能。
+- **不再夸大**：不声称存在完整自动“记忆衰减引擎”或所有记忆自动注入 system prompt，除非对应运行链路被验证。
 
 **🧠 Memory Graph 工具集（15 个工具）**
 结构化长期记忆系统，替代 Hindsight 盲搜：
@@ -57,7 +57,7 @@
 - **Graph namespace**：长期事实按用户隔离
 - **Hindsight bank**：原始对话证据按用户独立 bank 隔离
 - **Per-user MEMORY.md**：操作规则按用户隔离
-- session_search 按用户过滤，CJK 中文搜索已修复
+- session_search 在群/共享上下文有防泄漏限制；仍需真正 DB 查询级 user/chat/thread 过滤来彻底闭环
 
 **🔧 Custom Provider 兼容性**
 修复自定义 provider 的多个 bug：is_custom_provider 参数、max_tokens 默认值、base_url 环境变量、credential pool key。
@@ -95,7 +95,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 
 **仍需本补丁集的修复**：
 - Memory Metacognition Framework（预检门控 + 策略路由）
-- Disclosure Router + 记忆衰减引擎 + 渐进式披露
+- 记忆检索与披露已验证部分 / 实验辅助模块
 - Memory Graph 工具集（15 个工具）
 - 混合技能选择器（3 层筛选）
 - Skill Evaluation Gate（代码级强制）
@@ -108,7 +108,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 
 ## 安装内容
 
-通过 `combined-final-v16.patch` 安装：
+通过 `combined-final-v17.patch`（可为空/可跳过）+ overlay-first `install.sh` 安装：
 
 ### 核心架构（借鉴 Claude Code）
 - User Context / System Prompt 分离（prompt_builder.py）
@@ -117,7 +117,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 
 ### 记忆系统
 - Memory Metacognition Framework（预检门控 + 记忆注入 + 策略路由）
-- Disclosure Router + 渐进式披露 + 记忆衰减
+- 记忆检索与披露（已验证运行链路 + 实验辅助模块；不再夸大为完整衰减引擎）
 - Memory Graph 完整模块（db/services/web/tool，15+ 文件）
 - Memory Write Pipeline（记忆写入流水线）
 - Shadow Write Logger（记忆写入审计）
@@ -131,7 +131,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 - FTS5 语义技能检索
 
 ### 多用户隔离
-- session_search user_id 过滤
+- session_search 群/共享上下文防泄漏限制（DB 查询级 user/chat/thread 过滤仍是下一步 P0）
 - Weixin 多用户隔离
 - Hindsight bank 隔离
 - Memory Graph namespace 隔离
