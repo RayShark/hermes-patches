@@ -40,7 +40,7 @@ if [ -s "$PATCH_FILE" ]; then
 fi
 
 # 2. Copy agent modules / patched core files
-for module in memory_metacognition.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py request_context.py agent_init.py agent_runtime_helpers.py conversation_loop.py memory_provider.py tool_executor.py; do
+for module in memory_metacognition.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py request_context.py agent_init.py agent_runtime_helpers.py conversation_loop.py memory_provider.py tool_executor.py image_gen_provider.py; do
     if [ -f "$PATCHES_DIR/agent/$module" ]; then
         cp "$PATCHES_DIR/agent/$module" "$HERMES_DIR/agent/"
         echo "   ✅ agent/$module 已复制"
@@ -56,7 +56,7 @@ if [ -d "$PATCHES_DIR/agent/memory_graph" ]; then
 fi
 
 # 3. Copy tools and DB/session state files
-for tool_file in memory_graph_tool.py session_search_tool.py; do
+for tool_file in memory_graph_tool.py session_search_tool.py image_generation_tool.py; do
     if [ -f "$PATCHES_DIR/tools/$tool_file" ]; then
         cp "$PATCHES_DIR/tools/$tool_file" "$HERMES_DIR/tools/"
         echo "   ✅ tools/$tool_file 已复制"
