@@ -223,27 +223,60 @@ echo "✅ 补丁安装完成！"
 echo "   请重启 gateway: hermes gateway restart"
 
 
-# 8. Install and enable Memory Graph systemd service when systemd is available.
+# 8. Install resident Memory Stack scripts and systemd units when available.
 # This keeps the HTTP dashboard/API on 127.0.0.1:8900 alive after reboot and
-# after `hermes update`. Tool calls can work in-process, but WebUI/API needs a
-# resident server.
+# after `hermes update`. The watchdog catches "process up but API unhealthy"
+# failures that Restart=always cannot see.
+if [ -f "$PATCHES_DIR/scripts/hermes-memory-stack-watchdog.sh" ]; then
+    mkdir -p "$HOME/.hermes/scripts"
+    cp "$PATCHES_DIR/scripts/hermes-memory-stack-watchdog.sh" "$HOME/.hermes/scripts/hermes-memory-stack-watchdog.sh"
+    chmod +x "$HOME/.hermes/scripts/hermes-memory-stack-watchdog.sh"
+    echo "   ✅ hermes-memory-stack-watchdog.sh 已复制"
+fi
+
 if command -v systemctl >/dev/null 2>&1 && [ -d "$PATCHES_DIR/systemd" ]; then
     if [ "$(id -u)" -eq 0 ] && [ -d /etc/systemd/system ]; then
         cp "$PATCHES_DIR/systemd/hermes-memory-graph.system.service" /etc/systemd/system/hermes-memory-graph.service
         cp "$PATCHES_DIR/systemd/hermes-memory-stack.system.target" /etc/systemd/system/hermes-memory-stack.target
+        if [ -f "$PATCHES_DIR/systemd/hermes-memory-stack-watchdog.system.service" ]; then
+            cp "$PATCHES_DIR/systemd/hermes-memory-stack-watchdog.system.service" /etc/systemd/system/hermes-memory-stack-watchdog.service
+        fi
+        if [ -f "$PATCHES_DIR/systemd/hermes-memory-stack-watchdog.system.timer" ]; then
+            cp "$PATCHES_DIR/systemd/hermes-memory-stack-watchdog.system.timer" /etc/systemd/system/hermes-memory-stack-watchdog.timer
+        fi
         systemctl daemon-reload || true
         systemctl enable hermes-memory-graph.service hermes-memory-stack.target >/dev/null 2>&1 || true
         systemctl restart hermes-memory-graph.service >/dev/null 2>&1 || true
-        echo "   ✅ hermes-memory-graph systemd service 已安装/启动"
+        for _i in $(seq 1 15); do
+            curl -fsS -m 2 http://127.0.0.1:8900/health >/dev/null 2>&1 && break
+            sleep 1
+        done
+        if [ -f /etc/systemd/system/hermes-memory-stack-watchdog.timer ]; then
+            systemctl enable --now hermes-memory-stack-watchdog.timer >/dev/null 2>&1 || true
+        fi
+        echo "   ✅ hermes-memory-graph systemd service/watchdog 已安装/启动"
     else
         USER_SYSTEMD_DIR="$HOME/.config/systemd/user"
         mkdir -p "$USER_SYSTEMD_DIR"
         cp "$PATCHES_DIR/systemd/hermes-memory-graph.service" "$USER_SYSTEMD_DIR/hermes-memory-graph.service"
         cp "$PATCHES_DIR/systemd/hermes-memory-stack.target" "$USER_SYSTEMD_DIR/hermes-memory-stack.target"
+        if [ -f "$PATCHES_DIR/systemd/hermes-memory-stack-watchdog.service" ]; then
+            cp "$PATCHES_DIR/systemd/hermes-memory-stack-watchdog.service" "$USER_SYSTEMD_DIR/hermes-memory-stack-watchdog.service"
+        fi
+        if [ -f "$PATCHES_DIR/systemd/hermes-memory-stack-watchdog.timer" ]; then
+            cp "$PATCHES_DIR/systemd/hermes-memory-stack-watchdog.timer" "$USER_SYSTEMD_DIR/hermes-memory-stack-watchdog.timer"
+        fi
         systemctl --user daemon-reload || true
         systemctl --user enable hermes-memory-graph.service hermes-memory-stack.target >/dev/null 2>&1 || true
         systemctl --user restart hermes-memory-graph.service >/dev/null 2>&1 || true
-        echo "   ✅ hermes-memory-graph user systemd service 已安装/启动"
+        for _i in $(seq 1 15); do
+            curl -fsS -m 2 http://127.0.0.1:8900/health >/dev/null 2>&1 && break
+            sleep 1
+        done
+        if [ -f "$USER_SYSTEMD_DIR/hermes-memory-stack-watchdog.timer" ]; then
+            systemctl --user enable --now hermes-memory-stack-watchdog.timer >/dev/null 2>&1 || true
+        fi
+        echo "   ✅ hermes-memory-graph user systemd service/watchdog 已安装/启动"
     fi
 fi
 
