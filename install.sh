@@ -6,7 +6,17 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES_DIR="$SCRIPT_DIR"
-HERMES_DIR="${HERMES_HOME:-$HOME/.hermes/hermes-agent}"
+DEFAULT_HERMES_DIR="$HOME/.hermes/hermes-agent"
+HERMES_DIR="${HERMES_HOME:-$DEFAULT_HERMES_DIR}"
+# When hermes update calls this script from the profile root (~/.hermes),
+# HERMES_HOME may point at the profile directory instead of the repo root.
+# Detect that case and fall back to the real repo if it exists.
+if [ -d "$HERMES_DIR/hermes-agent" ] && [ ! -e "$HERMES_DIR/toolsets.py" ]; then
+    HERMES_DIR="$HERMES_DIR/hermes-agent"
+fi
+if [ ! -e "$HERMES_DIR/toolsets.py" ] && [ -d "$DEFAULT_HERMES_DIR" ]; then
+    HERMES_DIR="$DEFAULT_HERMES_DIR"
+fi
 
 echo "🔧 Hermes 社区补丁合集 v18"
 echo "   适配版本：v0.14.0+ (v2026.5.16+) + verified upstream d3f62c691"
