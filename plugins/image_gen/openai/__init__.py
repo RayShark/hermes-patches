@@ -40,6 +40,25 @@ from agent.image_gen_provider import (
 logger = logging.getLogger(__name__)
 
 
+def _get_env_value(key: str) -> Optional[str]:
+    """Read a secret/config env value through Hermes' .env resolver.
+
+    Do not rely only on os.environ: terminal/CLI subprocesses in this
+    deployment do not automatically source /root/.hermes/.env, while the
+    gateway does. Using hermes_cli.config.get_env_value keeps image_gen usable
+    from both paths.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+
+        value = get_env_value(key)
+        if value:
+            return value
+    except Exception as exc:
+        logger.debug("Could not resolve %s via Hermes .env: %s", key, exc)
+    return os.environ.get(key)
+
+
 # ---------------------------------------------------------------------------
 # Model catalog
 # ---------------------------------------------------------------------------
@@ -134,7 +153,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not _get_env_value("OPENAI_API_KEY"):
             return False
         try:
             import openai  # noqa: F401
@@ -188,7 +207,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not _get_env_value("OPENAI_API_KEY"):
             return error_response(
                 error=(
                     "OPENAI_API_KEY not set. Run `hermes tools` → Image "
@@ -225,12 +244,12 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
         try:
             client_kwargs: Dict[str, Any] = {}
-            api_key = os.environ.get("OPENAI_API_KEY")
+            api_key = _get_env_value("OPENAI_API_KEY")
             if api_key:
                 client_kwargs["api_key"] = api_key
             cfg = _load_openai_config()
             openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
-            base_url = os.environ.get("OPENAI_BASE_URL")
+            base_url = _get_env_value("OPENAI_BASE_URL")
             if not base_url and isinstance(openai_cfg, dict):
                 raw_base = openai_cfg.get("base_url")
                 if isinstance(raw_base, str) and raw_base.strip():
@@ -361,7 +380,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
                     aspect_ratio=aspect,
                 )
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not _get_env_value("OPENAI_API_KEY"):
             return error_response(
                 error=(
                     "OPENAI_API_KEY not set. Run `hermes tools` → Image "
@@ -406,12 +425,12 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
         try:
             client_kwargs: Dict[str, Any] = {}
-            api_key = os.environ.get("OPENAI_API_KEY")
+            api_key = _get_env_value("OPENAI_API_KEY")
             if api_key:
                 client_kwargs["api_key"] = api_key
             cfg = _load_openai_config()
             openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
-            base_url = os.environ.get("OPENAI_BASE_URL")
+            base_url = _get_env_value("OPENAI_BASE_URL")
             if not base_url and isinstance(openai_cfg, dict):
                 raw_base = openai_cfg.get("base_url")
                 if isinstance(raw_base, str) and raw_base.strip():

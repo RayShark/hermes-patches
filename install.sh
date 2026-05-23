@@ -114,6 +114,33 @@ if [ -f "$PATCHES_DIR/plugins/image_gen/openai/__init__.py" ]; then
     echo "   ✅ OpenAI image_gen provider 已复制"
 fi
 
+# 3a. Copy patched Hermes dashboard files. These UI/API fixes are intentionally
+# overlaid after upstream update because the dashboard is served from the built
+# web_dist bundle; source-only fixes are invisible until rebuilt.
+for web_file in \
+    hermes_cli/web_server.py \
+    web/src/lib/api.ts \
+    web/src/pages/SessionsPage.tsx \
+    web/src/components/ModelPickerDialog.tsx \
+    web/src/pages/ProfilesPage.tsx \
+    web/src/plugins/registry.ts \
+    web/src/components/ui/checkbox.tsx; do
+    if [ -f "$PATCHES_DIR/$web_file" ]; then
+        mkdir -p "$HERMES_DIR/$(dirname "$web_file")"
+        cp "$PATCHES_DIR/$web_file" "$HERMES_DIR/$web_file"
+        echo "   ✅ $web_file 已复制"
+    fi
+done
+if [ -d "$PATCHES_DIR/web/src/types" ]; then
+    mkdir -p "$HERMES_DIR/web/src/types"
+    cp -R "$PATCHES_DIR/web/src/types/." "$HERMES_DIR/web/src/types/"
+    echo "   ✅ web/src/types 已复制"
+fi
+if [ -f "$HERMES_DIR/web/package.json" ] && command -v npm >/dev/null 2>&1; then
+    (cd "$HERMES_DIR/web" && npm run build)
+    echo "   ✅ Hermes dashboard web_dist 已重建"
+fi
+
 # 3b. Copy patched Hindsight provider and site-package hotfixes
 if [ -f "$PATCHES_DIR/plugins/memory/hindsight/__init__.py" ]; then
     mkdir -p "$HERMES_DIR/plugins/memory/hindsight"
