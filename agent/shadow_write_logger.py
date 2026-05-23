@@ -49,8 +49,16 @@ def log_shadow_write(
             "requires_review": c.get("requires_review", False),
             "reason": c.get("reason", ""),
             "dedup_key": c.get("dedup_key", ""),
+            "auto_write_allowed": c.get("auto_write_allowed", False),
+            "actually_written": c.get("actually_written", False),
+            "readback_ok": c.get("readback_ok", False),
+            "uri": c.get("uri", ""),
+            "write_error": c.get("write_error", ""),
         }
         entry["candidate_writes"].append(write_action)
+
+        if c.get("actually_written"):
+            entry["actually_written"] = True
 
         target = c.get("target_store", "ignore")
         importance = c.get("importance", 0)

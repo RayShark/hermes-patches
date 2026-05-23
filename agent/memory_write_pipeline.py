@@ -6,10 +6,63 @@ Flow: Conversation → Reflection → Candidate Extraction → Write Gates → S
 import re
 import logging
 import json
+import os
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+def load_memory_write_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """Load memory-write policy from Hermes home.
+
+    The pipeline is deliberately conservative by default: shadow-only unless
+    the operator explicitly enables limited_auto/full_auto in
+    ~/.hermes/memory_write_config.yaml. This keeps the implementation generic
+    and policy-driven rather than baking local deployment choices into code.
+    """
+    default = {
+        "mode": "shadow",
+        "auto_write_threshold": 0.85,
+        "never_auto_write_to_core": True,
+        "allowed_auto_types": [
+            "user_fact",
+            "project_fact",
+            "task",
+            "explicit_preference",
+            "explicit_correction",
+            "decision",
+            "lesson",
+        ],
+    }
+    path = Path(config_path or os.path.expanduser("~/.hermes/memory_write_config.yaml"))
+    if not path.exists():
+        return default
+    try:
+        import yaml
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        cfg = raw.get("memory_write", raw) or {}
+        merged = dict(default)
+        merged.update({k: v for k, v in cfg.items() if v is not None})
+        return merged
+    except Exception as exc:
+        logger.warning("Failed to load memory write config from %s: %s", path, exc)
+        return default
+
+
+def _auto_type(candidate: "CandidateFact") -> str:
+    """Map a candidate to policy-level auto-write type.
+
+    This is intentionally metadata-based, not keyword-based. Text semantics are
+    classified upstream; this gate only decides whether a classified candidate
+    is safe to write automatically.
+    """
+    if candidate.source_type == "user_correction":
+        return "explicit_correction"
+    if candidate.memory_type == "preference" and candidate.source_type == "user_direct":
+        return "explicit_preference"
+    return candidate.memory_type
 
 # ─── Data Classes ────────────────────────────────────────────────
 
@@ -127,9 +180,10 @@ def generate_readback_queries(fact: CandidateFact) -> List[str]:
 class MemoryWritePipeline:
     """Orchestrates automatic memory writing."""
 
-    def __init__(self, graph_client=None, hindsight_client=None):
+    def __init__(self, graph_client=None, hindsight_client=None, config: Optional[Dict[str, Any]] = None):
         self.graph = graph_client
         self.hindsight = hindsight_client
+        self.config = config if config is not None else load_memory_write_config()
         self._write_log = []
 
     def reflect_and_extract(self, user_msg: str, assistant_msg: str) -> Dict[str, Any]:
@@ -342,6 +396,116 @@ class MemoryWritePipeline:
             'namespace': namespace or candidate.namespace,
         }
 
+    def _should_auto_write(self, candidate: CandidateFact, classification: Dict[str, Any]) -> bool:
+        """Return True for high-confidence, user-originated facts safe to write automatically."""
+        mode = str(self.config.get('mode', 'shadow')).strip().lower()
+        if mode not in {'limited_auto', 'full_auto'}:
+            return False
+        if classification.get('action') != 'write':
+            return False
+        if classification.get('target_store') not in {'memory_graph', 'memory_md'}:
+            return False
+        if candidate.requires_review or classification.get('requires_review'):
+            return False
+        if candidate.source_type not in {'user_direct', 'user_correction'}:
+            return False
+        threshold = float(self.config.get('auto_write_threshold', 0.85))
+        if candidate.importance < threshold or candidate.confidence < threshold:
+            return False
+        allowed = set(self.config.get('allowed_auto_types') or [])
+        if _auto_type(candidate) not in allowed:
+            return False
+        namespace = classification.get('namespace') or candidate.namespace or ''
+        if self.config.get('never_auto_write_to_core', True) and not namespace:
+            return False
+        return True
+
+    def _memory_graph_title(self, candidate: CandidateFact) -> str:
+        subject = (candidate.subject or candidate.memory_type or 'memory').strip()
+        predicate = (candidate.predicate or 'fact').strip()
+        raw = f"{subject}-{predicate}".strip('-')
+        return re.sub(r'\s+', ' ', raw)[:80] or 'auto-write-memory'
+
+    def _memory_graph_content(self, candidate: CandidateFact) -> str:
+        return (
+            f"Type: {candidate.memory_type}\n"
+            f"Subject: {candidate.subject}\n"
+            f"Predicate: {candidate.predicate}\n"
+            f"Value: {candidate.object_value}\n"
+            f"Source: {candidate.source_type}\n"
+            f"Confidence: {candidate.confidence}\n"
+            f"Evidence: {candidate.evidence_quote}"
+        )
+
+    def _write_memory_graph(self, candidate: CandidateFact, classification: Dict[str, Any]) -> Dict[str, Any]:
+        """Write a candidate to Memory Graph through the deployed tool module."""
+        if self.graph is not None:
+            return self.graph.write_candidate(candidate, classification, generate_readback_queries(candidate))
+
+        from tools import memory_graph_tool
+
+        namespace = classification.get('namespace') or candidate.namespace or ''
+        content = self._memory_graph_content(candidate)
+        title = self._memory_graph_title(candidate)
+
+        # Avoid obvious duplicates before writing. This is an exact-content guard,
+        # not intent detection; semantic routing remains upstream of this method.
+        existing_raw = memory_graph_tool._search({
+            'query': candidate.object_value,
+            'limit': 5,
+            'namespace': namespace,
+        })
+        existing = json.loads(existing_raw)
+        for item in existing.get('results', []):
+            if candidate.object_value and candidate.object_value in str(item.get('content', '')):
+                return {
+                    'written': False,
+                    'duplicate': True,
+                    'uri': item.get('uri', ''),
+                    'search_count': existing.get('count', 0),
+                }
+
+        created_raw = memory_graph_tool._create({
+            'parent_uri': '',
+            'domain': 'core',
+            'title': title,
+            'content': content,
+            'priority': 1 if candidate.importance < 0.95 else 2,
+            'namespace': namespace,
+        })
+        created = json.loads(created_raw)
+        if created.get('error'):
+            return {'written': False, 'error': created.get('error')}
+
+        readback = []
+        readback_ok = False
+        for query in generate_readback_queries(candidate):
+            search_raw = memory_graph_tool._search({
+                'query': query,
+                'limit': 5,
+                'namespace': namespace,
+            })
+            search = json.loads(search_raw)
+            readback.append({'query': query, 'count': search.get('count', 0)})
+            rows = search.get('results', [])
+            if any(
+                created.get('node_uuid') == row.get('node_uuid')
+                or (created.get('uri') and created.get('uri') == row.get('uri'))
+                or (candidate.object_value and candidate.object_value in str(row))
+                for row in rows
+            ):
+                readback_ok = True
+                break
+
+        return {
+            'written': True,
+            'duplicate': False,
+            'readback_ok': readback_ok,
+            'readback': readback,
+            'uri': created.get('uri') or f"core://{created.get('path', '')}",
+            'node_uuid': created.get('node_uuid'),
+        }
+
     def write_and_verify(self, candidate: CandidateFact, classification: Dict) -> Dict[str, Any]:
         """Write to target store and verify readback."""
         result = {
@@ -349,6 +513,7 @@ class MemoryWritePipeline:
             'action': classification.get('action'),
             'target': classification.get('target_store'),
             'written': False,
+            'auto_write_allowed': False,
             'readback_ok': False,
             'readback_queries': [],
         }
@@ -356,13 +521,17 @@ class MemoryWritePipeline:
         if classification.get('action') != 'write':
             return result
 
-        # Generate readback queries
         result['readback_queries'] = generate_readback_queries(candidate)
+        result['auto_write_allowed'] = self._should_auto_write(candidate, classification)
+        if not result['auto_write_allowed']:
+            result['reason'] = 'auto-write gate rejected candidate'
+            return result
 
-        # Actual write would happen here
-        # For now, return the plan
-        result['written'] = True  # placeholder
-
+        # Rules that would normally fit MEMORY.md are written to Memory Graph here.
+        # L1 memory remains a tiny injected rules layer; Graph is the durable store.
+        graph_result = self._write_memory_graph(candidate, classification)
+        result.update(graph_result)
+        result['readback_ok'] = bool(graph_result.get('readback_ok') or graph_result.get('duplicate'))
         return result
 
 # ─── Write Regression Test Suite ──────────────────────────────────

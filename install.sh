@@ -138,8 +138,12 @@ if [ -d "$PATCHES_DIR/web/src/types" ]; then
     echo "   ✅ web/src/types 已复制"
 fi
 if [ -f "$HERMES_DIR/web/package.json" ] && command -v npm >/dev/null 2>&1; then
-    (cd "$HERMES_DIR/web" && npm run build)
-    echo "   ✅ Hermes dashboard web_dist 已重建"
+    if [ -x "$HERMES_DIR/web/node_modules/.bin/tsc" ] || [ -x "$HERMES_DIR/web/node_modules/.bin/vite" ]; then
+        (cd "$HERMES_DIR/web" && npm run build)
+        echo "   ✅ Hermes dashboard web_dist 已重建"
+    else
+        echo "   ⏭️ Hermes dashboard 依赖未安装，跳过 web_dist 重建"
+    fi
 fi
 
 # 3b. Copy patched Hindsight provider and site-package hotfixes

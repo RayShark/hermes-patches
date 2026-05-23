@@ -4178,28 +4178,40 @@ def run_conversation(
                 _chat_id = getattr(agent, '_chat_id', '') or ''
                 _namespace = f"telegram:{_chat_id}" if _chat_id else ""
 
+                _candidate_payloads = []
+                _auto_write_results = []
+                for c in _candidates:
+                    c.namespace = c.namespace or _namespace
+                    _classification = _pipeline.classify_write(c, namespace=_namespace)
+                    _write_result = _pipeline.write_and_verify(c, _classification)
+                    _auto_write_results.append(_write_result)
+                    _candidate_payloads.append({
+                        "memory_type": c.memory_type,
+                        "importance": c.importance,
+                        "target_store": _classification.get("target_store", c.target_store),
+                        "target_path": _classification.get("target_path", c.target_path),
+                        "subject": c.subject,
+                        "predicate": c.predicate,
+                        "object_value": c.object_value,
+                        "requires_review": c.requires_review or _classification.get("requires_review", False),
+                        "reason": c.reason or _classification.get("reason", ""),
+                        "namespace": _namespace,
+                        "auto_write_allowed": _write_result.get("auto_write_allowed", False),
+                        "actually_written": _write_result.get("written", False),
+                        "readback_ok": _write_result.get("readback_ok", False),
+                        "uri": _write_result.get("uri", ""),
+                        "write_error": _write_result.get("error", ""),
+                    })
+
+                _mode = "auto" if any(r.get("written") for r in _auto_write_results) else "shadow"
                 log_shadow_write(
                     conversation_id=getattr(agent, 'session_id', '') or '',
                     user_id=_user_id,
                     namespace=_namespace,
                     user_message=original_user_message if isinstance(original_user_message, str) else "",
                     assistant_message=final_response if isinstance(final_response, str) else "",
-                    candidates=[
-                        {
-                            "memory_type": c.memory_type,
-                            "importance": c.importance,
-                            "target_store": c.target_store,
-                            "target_path": c.target_path,
-                            "subject": c.subject,
-                            "predicate": c.predicate,
-                            "object_value": c.object_value,
-                            "requires_review": c.requires_review,
-                            "reason": c.reason,
-                            "namespace": _namespace,
-                        }
-                        for c in _candidates
-                    ],
-                    mode="shadow"
+                    candidates=_candidate_payloads,
+                    mode=_mode
                 )
         except Exception as _shadow_err:
             logger.debug("Shadow write hook failed: %s", _shadow_err)

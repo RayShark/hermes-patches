@@ -1,9 +1,10 @@
 # Memory Write Pipeline Configuration
-# Currently in shadow mode - do not enable auto-write until shadow quality is verified
+# Limited auto-write is enabled only for high-confidence, user-originated,
+# non-sensitive candidates with a non-core namespace and successful readback.
 
 memory_write:
   # Mode: shadow | limited_auto | full_auto
-  mode: shadow
+  mode: limited_auto
 
   # Minimum importance score for auto-write (only used in limited_auto/full_auto)
   auto_write_threshold: 0.85
@@ -13,6 +14,9 @@ memory_write:
     - user_fact           # 明确用户事实 (成绩/年龄/考试)
     - project_fact        # 明确项目事实 (技术栈/部署/配置)
     - task                # 明确任务 (明天检查部署)
+    - decision            # 明确决策
+    - lesson              # 明确经验教训
+    - rule                # 明确非敏感规则；敏感规则仍进入 review
     - explicit_preference # 明确长期偏好 (用户直接说)
     - explicit_correction # 明确纠错 (不是85是83)
 
