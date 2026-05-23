@@ -5,7 +5,8 @@ set -euo pipefail
 
 HERMES_DIR="${HERMES_DIR:-$HOME/.hermes/hermes-agent}"
 PATCHES_DIR="${PATCHES_DIR:-$HOME/.hermes/patches}"
-MG_URL="${MG_URL:-http://127.0.0.1:8900}"
+MG_URL="${MG_URL:-http://127.0.0.1:8233}"
+MG_PUBLIC_URL="${MG_PUBLIC_URL:-https://mg.bz9.me}"
 DASHBOARD_URL="${DASHBOARD_URL:-http://127.0.0.1:9119}"
 FAIL=0
 
@@ -57,6 +58,27 @@ if command -v curl >/dev/null 2>&1; then
     ok "Memory Graph health reachable: $(tr -d '\n' </tmp/hermes-mg-health.json)"
   else
     fail "Memory Graph health failed at $MG_URL/health: $(tr -d '\n' </tmp/hermes-mg-health.err 2>/dev/null || true)"
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$MG_URL" "$MG_PUBLIC_URL" <<'PY' || exit_code=$?
+import json, sys, urllib.request
+local, public = [x.rstrip('/') for x in sys.argv[1:3]]
+for label, base in [('local', local), ('public', public)]:
+    req = urllib.request.Request(base + '/openapi.json', headers={'User-Agent': 'Hermes-Patch-Guard/1.0'})
+    data = json.load(urllib.request.urlopen(req, timeout=15))
+    paths = set(data.get('paths', {}))
+    required = {'/api/browse/node', '/api/browse/search', '/api/settings', '/api/review'}
+    missing = sorted(p for p in required if p not in paths)
+    old_only = any(p.startswith('/api/memory-graph/') for p in paths)
+    if missing or old_only:
+        print(f'MG_WEBUI_FAIL {label} missing={missing} old_api={old_only}')
+        sys.exit(5)
+print('MG_WEBUI_OK standalone browse/settings/review API surface reachable')
+PY
+    rc=${exit_code:-0}
+    unset exit_code
+    if [ "$rc" -eq 0 ]; then ok "Standalone Memory Graph WebUI API surface reachable"; else fail "Memory Graph WebUI API surface probe failed"; fi
   fi
 
   # Dashboard protected APIs require the ephemeral token injected into index.html.

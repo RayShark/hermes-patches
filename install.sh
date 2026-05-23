@@ -25,7 +25,7 @@ fi
 # possible so the runtime is self-healing instead of silently degraded.
 if command -v python3 >/dev/null 2>&1; then
     missing_deps=()
-    for mod in bcrypt jieba asyncpg; do
+    for mod in bcrypt jieba asyncpg ahocorasick; do
         if ! python3 - <<PY >/dev/null 2>&1
 import importlib.util
 raise SystemExit(0 if importlib.util.find_spec("$mod") else 1)
@@ -43,6 +43,7 @@ PY
                     bcrypt) apt_packages+=(python3-bcrypt) ;;
                     jieba) apt_packages+=(python3-jieba) ;;
                     asyncpg) apt_packages+=(python3-asyncpg) ;;
+                    ahocorasick) apt_packages+=(python3-ahocorasick) ;;
                 esac
             done
             if [ ${#apt_packages[@]} -gt 0 ]; then
@@ -51,7 +52,7 @@ PY
                 echo "   ✅ Python 运行依赖已安装: ${apt_packages[*]}"
             fi
         else
-            echo "   ⚠️ 无法自动安装依赖，请手动安装: python3-bcrypt python3-jieba python3-asyncpg"
+            echo "   ⚠️ 无法自动安装依赖，请手动安装: python3-bcrypt python3-jieba python3-asyncpg python3-ahocorasick"
         fi
     fi
 fi
@@ -225,6 +226,15 @@ if [ -f "$PATCHES_DIR/scripts/hermes-patch-chain-guard.sh" ]; then
     cp "$PATCHES_DIR/scripts/hermes-patch-chain-guard.sh" "$HOME/.hermes/scripts/hermes-patch-chain-guard.sh"
     chmod +x "$HOME/.hermes/scripts/hermes-patch-chain-guard.sh"
     echo "   ✅ hermes-patch-chain-guard.sh 已安装"
+fi
+if [ -f "$PATCHES_DIR/scripts/deploy-standalone-memory-graph-webui.sh" ]; then
+    mkdir -p "$HOME/.hermes/scripts"
+    cp "$PATCHES_DIR/scripts/deploy-standalone-memory-graph-webui.sh" "$HOME/.hermes/scripts/deploy-standalone-memory-graph-webui.sh"
+    chmod +x "$HOME/.hermes/scripts/deploy-standalone-memory-graph-webui.sh"
+    echo "   ✅ deploy-standalone-memory-graph-webui.sh 已安装"
+    if [ "${HERMES_DEPLOY_STANDALONE_MG_WEBUI:-1}" != "0" ] && [ -d "/root/projects/memory-graph/backend" ] && [ "$(id -u)" -eq 0 ]; then
+        "$HOME/.hermes/scripts/deploy-standalone-memory-graph-webui.sh" || echo "   ⚠️ standalone Memory Graph WebUI 部署失败，请手动运行 ~/.hermes/scripts/deploy-standalone-memory-graph-webui.sh"
+    fi
 fi
 
 # 7. Register memory_graph tools in toolsets.py without replacing upstream's file.
