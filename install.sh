@@ -18,13 +18,45 @@ if [ ! -e "$HERMES_DIR/toolsets.py" ] && [ -d "$DEFAULT_HERMES_DIR" ]; then
     HERMES_DIR="$DEFAULT_HERMES_DIR"
 fi
 
-echo "🔧 Hermes 社区补丁合集 v18"
-echo "   适配版本：v0.14.0+ (v2026.5.16+) + verified upstream d61785889"
-echo "   补丁目录：$PATCHES_DIR"
-echo "   Hermes目录：$HERMES_DIR"
-echo ""
+# 0. Ensure Python runtime dependencies for Memory Graph are present.
+# The Memory Graph backend imports bcrypt, jieba, and asyncpg at startup.
+# If `hermes update` or a fresh system image omits them, the web UI can look
+# "installed" but fail immediately on launch. Install the Debian packages when
+# possible so the runtime is self-healing instead of silently degraded.
+if command -v python3 >/dev/null 2>&1; then
+    missing_deps=()
+    for mod in bcrypt jieba asyncpg; do
+        if ! python3 - <<PY >/dev/null 2>&1
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec("$mod") else 1)
+PY
+        then
+            missing_deps+=("$mod")
+        fi
+    done
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        echo "📦 检测到缺失 Python 运行依赖: ${missing_deps[*]}"
+        if command -v apt-get >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
+            apt_packages=()
+            for mod in "${missing_deps[@]}"; do
+                case "$mod" in
+                    bcrypt) apt_packages+=(python3-bcrypt) ;;
+                    jieba) apt_packages+=(python3-jieba) ;;
+                    asyncpg) apt_packages+=(python3-asyncpg) ;;
+                esac
+            done
+            if [ ${#apt_packages[@]} -gt 0 ]; then
+                DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1 || true
+                DEBIAN_FRONTEND=noninteractive apt-get install -y "${apt_packages[@]}"
+                echo "   ✅ Python 运行依赖已安装: ${apt_packages[*]}"
+            fi
+        else
+            echo "   ⚠️ 无法自动安装依赖，请手动安装: python3-bcrypt python3-jieba python3-asyncpg"
+        fi
+    fi
+fi
 
-# 1. Apply optional combined patch if it exists and is non-empty.
+
 # Overlay copies below are authoritative because upstream moves quickly and large
 # git patches are brittle after `hermes update`.
 PATCH_FILE="$PATCHES_DIR/combined-final-v18.patch"
@@ -158,6 +190,15 @@ find "$HERMES_DIR/agent" -name "conversation_loop*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "agent_runtime_helpers*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "system_prompt*.pyc" -delete 2>/dev/null
 echo "   ✅ .pyc 缓存已清理"
+
+# 6b. Install patch-chain guard so future updates verify GitHub/local patch tree,
+# installed Hermes code, Memory Graph health, and dashboard protected APIs together.
+if [ -f "$PATCHES_DIR/scripts/hermes-patch-chain-guard.sh" ]; then
+    mkdir -p "$HOME/.hermes/scripts"
+    cp "$PATCHES_DIR/scripts/hermes-patch-chain-guard.sh" "$HOME/.hermes/scripts/hermes-patch-chain-guard.sh"
+    chmod +x "$HOME/.hermes/scripts/hermes-patch-chain-guard.sh"
+    echo "   ✅ hermes-patch-chain-guard.sh 已安装"
+fi
 
 # 7. Register memory_graph tools in toolsets.py without replacing upstream's file.
 # Tool discovery needs BOTH registry.register(...) in tools/memory_graph_tool.py
