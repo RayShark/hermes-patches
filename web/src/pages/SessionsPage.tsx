@@ -202,14 +202,15 @@ function MessageBubble({
           </span>
         )}
       </div>
-      {msg.content &&
-        (msg.role === "system" ? (
-          <div className="max-w-full whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground [overflow-wrap:anywhere]">
-            {msg.content}
-          </div>
-        ) : (
-          <Markdown content={msg.content} highlightTerms={highlightTerms} />
-        ))}
+      {msg.content && (
+        <div className="max-w-full overflow-hidden text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] [&_*]:max-w-full [&_pre]:overflow-x-auto [&_pre]:whitespace-pre-wrap [&_code]:break-words">
+          {msg.role === "system" ? (
+            <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+          ) : (
+            <Markdown content={msg.content} highlightTerms={highlightTerms} />
+          )}
+        </div>
+      )}
       {msg.tool_calls && msg.tool_calls.length > 0 && (
         <div className="mt-1">
           {msg.tool_calls.map((tc) => (
@@ -246,10 +247,29 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="flex max-h-[600px] min-w-0 max-w-full flex-col gap-3 overflow-y-auto pr-2"
+      className="flex min-w-0 max-w-full flex-col gap-3 overflow-y-auto pr-0 sm:pr-2"
     >
       {messages.map((msg, i) => (
-        <MessageBubble key={i} msg={msg} highlight={highlight} />
+        <div
+          key={i}
+          className={`flex min-w-0 w-full ${
+            msg.role === "user"
+              ? "justify-end"
+              : msg.role === "assistant"
+                ? "justify-start"
+                : "justify-center"
+          }`}
+        >
+          <div
+            className={`min-w-0 ${
+              msg.role === "system" || msg.role === "tool"
+                ? "w-full"
+                : "w-full sm:max-w-[92%] lg:max-w-[84%]"
+            }`}
+          >
+            <MessageBubble msg={msg} highlight={highlight} />
+          </div>
+        </div>
       ))}
     </div>
   );
@@ -304,14 +324,14 @@ function SessionRow({
       }`}
     >
       <div
-        className="flex min-w-0 cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
+        className="flex min-w-0 cursor-pointer items-start gap-2 p-2.5 transition-colors hover:bg-secondary/30 sm:gap-3 sm:p-3"
         onClick={onToggle}
       >
         <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
           <SourceIcon className="h-4 w-4" />
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+          <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
               <span
                 className={`min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
@@ -329,40 +349,35 @@ function SessionRow({
                 </Badge>
               )}
             </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-              <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[11px] text-muted-foreground sm:text-xs">
+              <span className="min-w-0 truncate font-mono-ui">
                 {(session.model ?? t.common.unknown).split("/").pop()}
               </span>
-              <span className="text-border">&#183;</span>
-              <span className="shrink-0">
-                {session.message_count} {t.common.msgs}
-              </span>
+              <span className="shrink-0 text-border">·</span>
+              <span className="shrink-0">{session.message_count} {t.common.msgs}</span>
               {session.tool_call_count > 0 && (
                 <>
-                  <span className="text-border">&#183;</span>
-                  <span className="shrink-0">
-                    {session.tool_call_count} {t.common.tools}
-                  </span>
+                  <span className="shrink-0 text-border">·</span>
+                  <span className="shrink-0">{session.tool_call_count} {t.common.tools}</span>
                 </>
               )}
-              <span className="text-border">&#183;</span>
+              <span className="shrink-0 text-border">·</span>
               <span className="shrink-0">{timeAgo(session.last_active)}</span>
+              <span className="hidden shrink-0 text-border sm:inline">·</span>
+              <span className="hidden max-w-[8rem] shrink truncate sm:inline">{session.source ?? "local"}</span>
             </div>
+            {snippet && <SnippetHighlight snippet={snippet} />}
           </div>
-          {snippet && <SnippetHighlight snippet={snippet} />}
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <Badge tone="outline" className="text-[10px]">
-              <span className="max-w-[8rem] truncate">{session.source ?? "local"}</span>
-            </Badge>
+
+          <div className="flex shrink-0 items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
             {resumeInChatEnabled && (
               <Button
                 ghost
                 size="icon"
-                className="text-muted-foreground hover:text-success"
+                className="h-7 w-7 text-muted-foreground hover:text-success"
                 aria-label={t.sessions.resumeInChat}
                 title={t.sessions.resumeInChat}
-                onClick={(e) => {
-                  e.stopPropagation();
+                onClick={() => {
                   navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
                 }}
               >
@@ -373,11 +388,9 @@ function SessionRow({
               ghost
               destructive
               size="icon"
+              className="h-7 w-7"
               aria-label={t.sessions.deleteSession}
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete();
-              }}
+              onClick={onDelete}
             >
               <Trash2 />
             </Button>
@@ -386,7 +399,7 @@ function SessionRow({
       </div>
 
       {isExpanded && (
-        <div className="min-w-0 max-w-full overflow-hidden border-t border-border bg-background/50 p-4">
+        <div className="min-w-0 max-w-full overflow-hidden border-t border-border bg-background/50 p-2.5 sm:p-4">
           {loading && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />

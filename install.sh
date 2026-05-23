@@ -122,6 +122,7 @@ for web_file in \
     hermes_cli/web_server.py \
     web/src/lib/api.ts \
     web/src/pages/SessionsPage.tsx \
+    web/src/pages/ModelsPage.tsx \
     web/src/components/ModelPickerDialog.tsx \
     web/src/pages/ProfilesPage.tsx \
     web/src/plugins/registry.ts \
