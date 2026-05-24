@@ -95,13 +95,18 @@ _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+# CORS: restrict browser API access to the local dashboard and explicitly
+# configured public dashboard hostnames.  The session token still gates
+# protected endpoints; these origins only allow legitimate dashboard pages to
+# complete Safari/WebKit preflight requests for the custom session header.
+_DASHBOARD_CORS_ORIGIN_RE = (
+    r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+    r"|^https://webui\.bz9\.me$"
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=_DASHBOARD_CORS_ORIGIN_RE,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -237,6 +242,8 @@ async def host_header_middleware(request: Request, call_next):
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
             return JSONResponse(
