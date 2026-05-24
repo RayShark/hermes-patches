@@ -220,15 +220,22 @@ function UseAsMenu({
     }
   };
 
-  // Close on outside click.
+  // Close on outside click or Escape.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && !target.closest?.("[data-use-as-menu]")) setOpen(false);
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
     window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   return (
@@ -240,13 +247,16 @@ function UseAsMenu({
         disabled={busy}
         className="text-[10px] h-6 px-2"
         prefix={busy ? <Spinner /> : null}
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
         Use as <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
+        <div role="menu" className="absolute right-0 top-full mt-1 z-50 min-w-[220px] max-w-[calc(100vw-2rem)] border border-border bg-card shadow-lg">
           <button
             type="button"
+            role="menuitem"
             onClick={() => assign("main", "")}
             disabled={busy}
             className="flex w-full items-center justify-between px-3 py-2 text-xs hover:bg-muted/50 disabled:opacity-40"
@@ -268,6 +278,7 @@ function UseAsMenu({
 
           <button
             type="button"
+            role="menuitem"
             onClick={() => assign("auxiliary", "")}
             disabled={busy}
             className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
@@ -279,6 +290,7 @@ function UseAsMenu({
             <button
               key={t.key}
               type="button"
+              role="menuitem"
               onClick={() => assign("auxiliary", t.key)}
               disabled={busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
@@ -497,12 +509,14 @@ function AuxiliaryTasksModal({
 }) {
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const modalRef = useModalBehavior({ open: true, onClose });
 
   const resetAllAux = async () => {
     setConfirmReset(false);
     setResetBusy(true);
+    setResetError(null);
     try {
       await api.setModelAssignment({
         scope: "auxiliary",
@@ -511,6 +525,8 @@ function AuxiliaryTasksModal({
         model: "",
       });
       onSaved();
+    } catch (e) {
+      setResetError(e instanceof Error ? e.message : String(e));
     } finally {
       setResetBusy(false);
     }
@@ -561,6 +577,11 @@ function AuxiliaryTasksModal({
             &quot;use the main model&quot;. Override per-task when you want a
             cheap/fast model for a specific job.
           </p>
+          {resetError && (
+            <p className="mt-2 break-words text-[10px] text-destructive [overflow-wrap:anywhere]">
+              {resetError}
+            </p>
+          )}
         </header>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-1">
@@ -847,13 +868,10 @@ export default function ModelsPage() {
   }, [days]);
 
   const onAssigned = useCallback(() => {
-    // Reload aux state after any assignment change.
-    api
-      .getAuxiliaryModels()
-      .then(setAux)
-      .catch(() => {});
+    setError(null);
+    load();
     setSaveKey((k) => k + 1);
-  }, []);
+  }, [load]);
 
   useLayoutEffect(() => {
     const periodLabel =
@@ -875,6 +893,7 @@ export default function ModelsPage() {
               type="button"
               size="sm"
               outlined={days !== p.days}
+              aria-pressed={days === p.days}
               onClick={() => setDays(p.days)}
             >
               {p.label}
@@ -1001,13 +1020,30 @@ export default function ModelsPage() {
         </Card>
       )}
 
+      {error && !data && !loading && (
+        <Card>
+          <CardContent className="py-12">
+            <div className="flex flex-col items-center gap-3 text-center text-muted-foreground">
+              <AlertTriangle className="h-8 w-8 text-warning" />
+              <p className="text-sm font-medium text-foreground">Model analytics could not load</p>
+              <p className="max-w-xl break-words text-xs text-muted-foreground/80 [overflow-wrap:anywhere]">
+                {error}
+              </p>
+              <Button type="button" size="sm" outlined onClick={load} disabled={loading}>
+                Retry
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {data && (
         <>
           {data.models.length > 0 ? (
             <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {data.models.map((m, i) => (
                 <ModelCard
-                  key={`${m.model}:${m.provider}`}
+                  key={`${m.model}:${m.provider || modelVendor(m.model) || "_"}`}
                   entry={m}
                   rank={i + 1}
                   main={aux?.main ?? null}
