@@ -120,6 +120,9 @@ fi
 # web_dist bundle; source-only fixes are invisible until rebuilt.
 for web_file in \
     hermes_cli/web_server.py \
+    hermes_cli/config.py \
+    agent/agent_init.py \
+    agent/anthropic_adapter.py \
     web/src/lib/api.ts \
     web/src/pages/SessionsPage.tsx \
     web/src/pages/ModelsPage.tsx \

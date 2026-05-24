@@ -136,6 +136,42 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _custom_provider_anthropic_betas_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> List[str]:
+    if (provider or "").strip().lower() != "custom":
+        return []
+    if not custom_providers:
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            custom_providers = get_compatible_custom_providers(load_config())
+        except Exception:
+            custom_providers = []
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return []
+
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        provider_model = str(entry.get("model", "") or "").strip()
+        if provider_model and not _custom_provider_model_matches(model, entry):
+            continue
+        raw_betas = entry.get("anthropic_beta")
+        if isinstance(raw_betas, str):
+            return [b.strip() for b in raw_betas.split(",") if b.strip()]
+        if isinstance(raw_betas, list):
+            return [b.strip() for b in raw_betas if isinstance(b, str) and b.strip()]
+        return []
+    return []
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -639,6 +675,12 @@ def init_agent(
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = base_url
+            _extra_anthropic_betas = _custom_provider_anthropic_betas_for_agent(
+                provider=agent.provider,
+                model=agent.model,
+                base_url=base_url,
+                custom_providers=getattr(agent, "_custom_providers", []),
+            )
             # Only mark the session as OAuth-authenticated when the token
             # genuinely belongs to native Anthropic.  Third-party providers
             # (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the
@@ -648,7 +690,12 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            agent._anthropic_client = build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+                extra_betas=_extra_anthropic_betas,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
