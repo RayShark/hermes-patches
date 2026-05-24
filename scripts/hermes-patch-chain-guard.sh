@@ -135,6 +135,25 @@ PY
   fi
 fi
 
+# Aegis-lite completion gate: do not declare completion from a restart/import alone.
+# Require baseline evidence, live health, CRUD proof, and guarded final status.
+if command -v df >/dev/null 2>&1; then
+  disk_pct=$(df -P / | awk 'NR==2 {gsub("%","",$5); print $5}')
+  if [ -n "${disk_pct:-}" ] && [ "$disk_pct" -lt 95 ]; then
+    ok "Aegis-lite baseline: root disk below death zone (${disk_pct}%)"
+  else
+    fail "Aegis-lite baseline: root disk still at/above 95% (${disk_pct:-unknown}%)"
+  fi
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  if curl -fsS -m 5 "http://127.0.0.1:8642/health" >/tmp/hermes-api-health.json 2>/tmp/hermes-api-health.err; then
+    ok "Aegis-lite live path: API server health reachable"
+  else
+    fail "Aegis-lite live path: API server health failed: $(tr -d '\n' </tmp/hermes-api-health.err 2>/dev/null || true)"
+  fi
+fi
+
 # Python import smoke: catches copied files that exist but fail at import time.
 if [ -x "$HERMES_DIR/venv/bin/python" ]; then
   "$HERMES_DIR/venv/bin/python" - <<'PY' || exit_code=$?
