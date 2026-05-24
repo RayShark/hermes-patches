@@ -7,6 +7,7 @@ HERMES_DIR="${HERMES_DIR:-$HOME/.hermes/hermes-agent}"
 PATCHES_DIR="${PATCHES_DIR:-$HOME/.hermes/patches}"
 MG_URL="${MG_URL:-http://127.0.0.1:8233}"
 MG_PUBLIC_URL="${MG_PUBLIC_URL:-https://mg.bz9.me}"
+MG_CORE_URL="${MG_CORE_URL:-http://127.0.0.1:8900}"
 DASHBOARD_URL="${DASHBOARD_URL:-http://127.0.0.1:9119}"
 FAIL=0
 
@@ -54,6 +55,30 @@ else
 fi
 
 if command -v curl >/dev/null 2>&1; then
+  # Resident memory stack health: this catches the real failure mode where
+  # Memory Graph HTTP or WebUI can look alive while PostgreSQL/Hindsight/CRUD is broken.
+  if command -v pg_lsclusters >/dev/null 2>&1; then
+    if pg_lsclusters | awk '$1=="15" && $2=="main" && $4=="online" {found=1} END{exit found?0:1}'; then
+      ok "PostgreSQL cluster 15/main online"
+    else
+      fail "PostgreSQL cluster 15/main is not online"
+    fi
+  fi
+  if curl -fsS -m 5 "http://127.0.0.1:9177/health" >/tmp/hermes-hindsight-health.json 2>/tmp/hermes-hindsight-health.err; then
+    if grep -q '"database".*"connected"' /tmp/hermes-hindsight-health.json; then
+      ok "Hindsight health database connected: $(tr -d '\n' </tmp/hermes-hindsight-health.json)"
+    else
+      fail "Hindsight health did not report database connected: $(tr -d '\n' </tmp/hermes-hindsight-health.json)"
+    fi
+  else
+    fail "Hindsight health failed: $(tr -d '\n' </tmp/hermes-hindsight-health.err 2>/dev/null || true)"
+  fi
+  if curl -fsS -m 5 "$MG_CORE_URL/health" >/tmp/hermes-mg-core-health.json 2>/tmp/hermes-mg-core-health.err; then
+    ok "Memory Graph core health reachable: $(tr -d '\n' </tmp/hermes-mg-core-health.json)"
+  else
+    fail "Memory Graph core health failed at $MG_CORE_URL/health: $(tr -d '\n' </tmp/hermes-mg-core-health.err 2>/dev/null || true)"
+  fi
+
   if curl -fsS -m 5 "$MG_URL/health" >/tmp/hermes-mg-health.json 2>/tmp/hermes-mg-health.err; then
     ok "Memory Graph health reachable: $(tr -d '\n' </tmp/hermes-mg-health.json)"
   else
@@ -128,6 +153,30 @@ PY
   rc=${exit_code:-0}
   unset exit_code
   if [ "$rc" -eq 0 ]; then ok "Patched Python modules import"; else fail "Patched Python module import smoke failed"; fi
+
+  "$HERMES_DIR/venv/bin/python" - <<'PY' || exit_code=$?
+import json, time
+from tools import memory_graph_tool as m
+stamp = str(int(time.time()))
+title = 'guard-smoke-' + stamp
+created = json.loads(m._create({'parent_uri':'core://系统架构','title':title,'content':'Patch-chain guard temporary Memory Graph smoke '+stamp,'priority':9,'domain':'core'}))
+if created.get('error'):
+    raise SystemExit('create failed: ' + json.dumps(created, ensure_ascii=False))
+uri = created.get('uri') or 'core://系统架构/' + title
+search = json.loads(m._search({'query':title,'limit':5,'domain':'core'}))
+if not any(title in (r.get('path','') + r.get('snippet','') + r.get('name','')) for r in search.get('results', [])):
+    raise SystemExit('search miss after create')
+deleted = json.loads(m._delete({'uri':uri,'domain':'core'}))
+if not deleted.get('deleted'):
+    raise SystemExit('delete failed: ' + json.dumps(deleted, ensure_ascii=False))
+search2 = json.loads(m._search({'query':title,'limit':5,'domain':'core'}))
+if any(title in (r.get('path','') + r.get('snippet','') + r.get('name','')) for r in search2.get('results', [])):
+    raise SystemExit('search hit after delete')
+print('MG_CRUD_OK', uri)
+PY
+  rc=${exit_code:-0}
+  unset exit_code
+  if [ "$rc" -eq 0 ]; then ok "Memory Graph CRUD smoke passed"; else fail "Memory Graph CRUD smoke failed"; fi
 else
   warn "Hermes venv python not executable; skipped import smoke"
 fi

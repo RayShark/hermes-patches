@@ -1,16 +1,91 @@
 #!/bin/bash
 # Hermes Memory Stack watchdog.
-# Checks resident Memory OS dependencies and restarts failed services when possible.
+# Checks resident Memory OS dependencies and remediates common runtime failures.
+# Focus: disk-full -> PostgreSQL down -> Hindsight/Memory Graph degraded.
 
 set -u
 
 LOG_PREFIX="[hermes-memory-watchdog]"
+HOME_DIR="${HOME:-/root}"
 MG_URL="${MEMORY_GRAPH_HEALTH_URL:-http://127.0.0.1:8900/health}"
 HINDSIGHT_URL="${HINDSIGHT_HEALTH_URL:-http://127.0.0.1:9177/health}"
+HERMES_DIR="${HERMES_DIR:-$HOME_DIR/.hermes/hermes-agent}"
+HERMES_HOME_DIR="${HERMES_HOME_DIR:-$HOME_DIR/.hermes}"
+DISK_WARN_PCT="${DISK_WARN_PCT:-90}"
+DISK_REMEDIATE_PCT="${DISK_REMEDIATE_PCT:-98}"
+RUN_CRUD_SMOKE="${RUN_CRUD_SMOKE:-1}"
+DRY_RUN="${DRY_RUN:-0}"
 
 log() { echo "$LOG_PREFIX $*"; }
-
 is_root() { [ "$(id -u)" -eq 0 ]; }
+
+_disk_pct() {
+    df -P / | awk 'NR==2 {gsub(/%/,"",$5); print $5}'
+}
+
+_run_or_echo() {
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY_RUN $*"
+    else
+        "$@"
+    fi
+}
+
+safe_cleanup() {
+    local pct="$1"
+    if [ "$pct" -lt "$DISK_REMEDIATE_PCT" ]; then
+        return 0
+    fi
+    log "disk usage ${pct}% >= ${DISK_REMEDIATE_PCT}%; running conservative cleanup"
+
+    # Reproducible browser/runtime caches.
+    for d in "$HOME_DIR/.cache/camoufox" "$HOME_DIR/.cache/ms-playwright" "$HOME_DIR/.cache/puppeteer"; do
+        if [ -d "$d" ]; then
+            log "cleanup cache: $d"
+            _run_or_echo rm -rf "$d"
+        fi
+    done
+
+    # Package caches only; not project node_modules.
+    if command -v apt-get >/dev/null 2>&1 && is_root; then
+        log "apt-get clean"
+        _run_or_echo apt-get clean
+    fi
+    if [ -d "$HOME_DIR/.npm" ]; then
+        log "cleanup npm cache: $HOME_DIR/.npm"
+        _run_or_echo rm -rf "$HOME_DIR/.npm/_cacache" "$HOME_DIR/.npm/_logs"
+    fi
+
+    # Old direct-child patch/smoke workdirs. These are clean clones or generated
+    # verification directories, not source-of-truth sessions or project DBs.
+    local tasks="$HERMES_HOME_DIR/tasks"
+    if [ -d "$tasks" ]; then
+        find "$tasks" -mindepth 1 -maxdepth 1 -type d \( \
+            -name 'memory-write-autowrite-smoke-*' -o \
+            -name 'image-edit-clean-smoke-*' -o \
+            -name 'hermes-v*-patch-check-*' -o \
+            -name 'patch-audit-*' -o \
+            -name 'hermes-patch-audit-*' -o \
+            -name 'memory-os-sync-check-*' -o \
+            -name 'hermes-install-test-*' -o \
+            -name 'hermes-clean-*' -o \
+            -name 'patch-verify-*' -o \
+            -name 'telegram-context-patch-*' -o \
+            -name 'telegram-context-combined-*' \
+        \) -mtime +1 -print | while IFS= read -r d; do
+            log "cleanup reproducible task dir: $d"
+            _run_or_echo rm -rf "$d"
+        done
+    fi
+
+    # Journal vacuum is safe and bounded.
+    if command -v journalctl >/dev/null 2>&1 && is_root; then
+        log "journalctl vacuum-size=100M"
+        _run_or_echo journalctl --vacuum-size=100M >/dev/null 2>&1 || true
+    fi
+
+    log "disk after cleanup: $(df -h / | awk 'NR==2 {print $5 " used, " $4 " free"}')"
+}
 
 restart_system_service() {
     local svc="$1"
@@ -20,94 +95,107 @@ restart_system_service() {
     fi
 }
 
-restart_user_service() {
-    local svc="$1"
-    if command -v systemctl >/dev/null 2>&1; then
-        log "restarting user $svc"
-        systemctl --user restart "$svc" || log "user restart failed: $svc"
-    fi
-}
-
 check_http() {
-    local name="$1"
-    local url="$2"
+    local url="$1"
     curl -fsS -m 5 "$url" >/dev/null 2>&1
 }
 
 check_postgres() {
-    if ! command -v pg_isready >/dev/null 2>&1; then
-        log "pg_isready not available; skipping PostgreSQL check"
-        return 0
+    if command -v pg_lsclusters >/dev/null 2>&1; then
+        pg_lsclusters | awk '$1=="15" && $2=="main" && $4=="online" {found=1} END{exit found?0:1}' || return 1
     fi
-    pg_isready -q
+    if command -v pg_isready >/dev/null 2>&1; then
+        pg_isready -q -h 127.0.0.1 -p 5432 -U postgres || return 1
+    fi
+    return 0
 }
 
-postgres_failed=0
-hindsight_failed=0
-mg_failed=0
+memory_graph_crud_smoke() {
+    [ "$RUN_CRUD_SMOKE" = "1" ] || return 0
+    [ -x "$HERMES_DIR/venv/bin/python" ] || { log "Hermes venv missing; skip Memory Graph CRUD smoke"; return 1; }
+    cd "$HERMES_DIR" || return 1
+    "$HERMES_DIR/venv/bin/python" - <<'PY'
+import json, time, sys
+from tools import memory_graph_tool as m
+stamp = str(int(time.time()))
+title = "watchdog-smoke-" + stamp
+content = "Temporary Memory Graph watchdog smoke node " + stamp
+parent = "core://系统架构"
+created = json.loads(m._create({"parent_uri": parent, "title": title, "content": content, "priority": 9, "domain": "core"}))
+if created.get("error"):
+    raise SystemExit("create failed: " + json.dumps(created, ensure_ascii=False))
+uri = created.get("uri") or ("core://系统架构/" + title)
+search = json.loads(m._search({"query": title, "limit": 5, "domain": "core"}))
+if not any(title in (r.get("path","") + r.get("snippet","") + r.get("name", "")) for r in search.get("results", [])):
+    raise SystemExit("search miss after create: " + json.dumps(search, ensure_ascii=False)[:500])
+deleted = json.loads(m._delete({"uri": uri, "domain": "core"}))
+if not deleted.get("deleted"):
+    raise SystemExit("delete failed: " + json.dumps(deleted, ensure_ascii=False))
+search2 = json.loads(m._search({"query": title, "limit": 5, "domain": "core"}))
+if any(title in (r.get("path","") + r.get("snippet","") + r.get("name", "")) for r in search2.get("results", [])):
+    raise SystemExit("search hit after delete: " + json.dumps(search2, ensure_ascii=False)[:500])
+print("MG_CRUD_OK", uri)
+PY
+}
+
+failed=0
+pct="$(_disk_pct 2>/dev/null || echo 100)"
+if [ "$pct" -ge "$DISK_WARN_PCT" ]; then
+    log "disk warning: ${pct}% used"
+fi
+safe_cleanup "$pct"
 
 if ! check_postgres; then
-    postgres_failed=1
     log "PostgreSQL unhealthy"
     if is_root; then
         restart_system_service postgresql@15-main.service
+        sleep 3
     else
         log "not root; cannot restart PostgreSQL"
     fi
 fi
+if ! check_postgres; then
+    log "PostgreSQL still unhealthy after remediation"
+    failed=1
+fi
 
-if ! check_http hindsight "$HINDSIGHT_URL"; then
-    hindsight_failed=1
+if ! check_http "$HINDSIGHT_URL"; then
     log "Hindsight unhealthy: $HINDSIGHT_URL"
     if is_root; then
         restart_system_service hindsight.service
-    else
-        log "not root; cannot restart system Hindsight"
+        sleep 3
     fi
 fi
+if ! check_http "$HINDSIGHT_URL"; then
+    log "Hindsight still unhealthy"
+    failed=1
+fi
 
-if ! check_http memory-graph "$MG_URL"; then
-    mg_failed=1
-    log "Memory Graph unhealthy: $MG_URL"
+if ! check_http "$MG_URL"; then
+    log "Memory Graph HTTP unhealthy: $MG_URL"
     if is_root; then
         restart_system_service hermes-memory-graph.service
+        sleep 3
     else
-        restart_user_service hermes-memory-graph.service
+        systemctl --user restart hermes-memory-graph.service || true
+        sleep 3
     fi
 fi
-
-# Re-check Memory Graph after restart because it is the service most often
-# affected by patch/update drift. Give uvicorn/imports time to bind the port.
-mg_ok=0
-for _i in $(seq 1 20); do
-    if check_http memory-graph "$MG_URL"; then
-        mg_ok=1
-        break
-    fi
-    sleep 1
-done
-if [ "$mg_ok" -ne 1 ]; then
-    log "Memory Graph still unhealthy after remediation"
-    mg_failed=1
-else
-    mg_failed=0
-fi
-
-# Re-check other services if they were unhealthy and restart was attempted.
-if [ "$postgres_failed" -eq 1 ] && check_postgres; then
-    postgres_failed=0
-fi
-if [ "$hindsight_failed" -eq 1 ] && check_http hindsight "$HINDSIGHT_URL"; then
-    hindsight_failed=0
-fi
-
-failed=0
-if [ "$postgres_failed" -ne 0 ] || [ "$hindsight_failed" -ne 0 ] || [ "$mg_failed" -ne 0 ]; then
+if ! check_http "$MG_URL"; then
+    log "Memory Graph HTTP still unhealthy"
     failed=1
+fi
+
+if [ "$failed" -eq 0 ]; then
+    if memory_graph_crud_smoke; then
+        log "Memory Graph CRUD smoke passed"
+    else
+        log "Memory Graph CRUD smoke failed"
+        failed=1
+    fi
 fi
 
 if [ "$failed" -eq 0 ]; then
     log "healthy"
 fi
-
 exit "$failed"
