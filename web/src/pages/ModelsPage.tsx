@@ -788,12 +788,38 @@ function ModelSettingsPanel({
 /*  Page                                                                */
 /* ──────────────────────────────────────────────────────────────────── */
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loadModelsAnalyticsWithRetry(days: number): Promise<{ data: ModelsAnalyticsResponse; degraded: boolean }> {
+  const attempts = [0, 350, 900];
+  let lastMessage = "Load failed";
+  for (const delay of attempts) {
+    if (delay) await sleep(delay);
+    try {
+      return { data: await api.getModelsAnalytics(days), degraded: false };
+    } catch (e) {
+      lastMessage = e instanceof Error ? e.message : String(e);
+    }
+  }
+  if (days > 7) {
+    try {
+      return { data: await api.getModelsAnalytics(7), degraded: true };
+    } catch (e) {
+      lastMessage = e instanceof Error ? e.message : String(e);
+    }
+  }
+  throw new Error(lastMessage);
+}
+
 export default function ModelsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<ModelsAnalyticsResponse | null>(null);
   const [aux, setAux] = useState<AuxiliaryModelsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [analyticsNote, setAnalyticsNote] = useState<string | null>(null);
   const [saveKey, setSaveKey] = useState(0);
   const loadRunId = useRef(0);
   // Gate the token/cost UI on `dashboard.show_token_analytics`.  See
@@ -821,7 +847,7 @@ export default function ModelsPage() {
     setLoading(true);
 
     const [modelsResult, auxResult] = await Promise.allSettled([
-      api.getModelsAnalytics(days),
+      loadModelsAnalyticsWithRetry(days),
       api.getAuxiliaryModels(),
     ]);
 
@@ -832,27 +858,18 @@ export default function ModelsPage() {
     }
 
     if (modelsResult.status === "fulfilled") {
-      setData(modelsResult.value);
+      setData(modelsResult.value.data);
       setError(null);
+      setAnalyticsNote(modelsResult.value.degraded ? "Using 7-day model analytics because the selected range was temporarily unavailable." : null);
     } else {
-      const firstReason = modelsResult.reason;
-      const firstMessage = firstReason instanceof Error ? firstReason.message : String(firstReason);
-
-      // Safari/WebKit can occasionally throw a generic "Load failed" for the
-      // analytics request even when the backend is healthy. Retry once before
-      // surfacing a partial-load warning, and keep any previously loaded data.
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      if (loadRunId.current !== runId) return;
-
-      const retry = await Promise.allSettled([api.getModelsAnalytics(days)]);
-      const retryResult = retry[0];
-      if (retryResult.status === "fulfilled") {
-        setData(retryResult.value);
+      const reason = modelsResult.reason;
+      const message = reason instanceof Error ? reason.message : String(reason);
+      if (data) {
         setError(null);
+        setAnalyticsNote(`Keeping previously loaded model analytics because refresh failed: ${message}`);
       } else {
-        const retryReason = retryResult.reason;
-        const retryMessage = retryReason instanceof Error ? retryReason.message : String(retryReason);
-        setError(`Analytics unavailable: ${retryMessage || firstMessage}`);
+        setAnalyticsNote(null);
+        setError(`Analytics unavailable: ${message}`);
       }
     }
 
@@ -982,6 +999,11 @@ export default function ModelsPage() {
                 }
               />
               </div>
+              {analyticsNote && (
+                <p className="mt-3 text-[10px] text-muted-foreground/70 leading-relaxed">
+                  {analyticsNote}
+                </p>
+              )}
               {!showTokens && (
                 <p className="mt-4 text-[10px] text-muted-foreground/70 leading-relaxed">
                   Token & cost analytics are hidden because the local counts

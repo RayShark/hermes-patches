@@ -89,7 +89,10 @@ export const api = {
   getAnalytics: (days: number) =>
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
   getModelsAnalytics: (days: number) =>
-    fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
+    fetchJSON<ModelsAnalyticsResponse>(
+      `/api/analytics/models?days=${days}&_=${Date.now()}`,
+      { cache: "no-store" },
+    ),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
