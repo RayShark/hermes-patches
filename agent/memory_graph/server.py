@@ -190,7 +190,7 @@ def create_app(graph_service=None, search_indexer=None, glossary_service=None):
         user = require_auth(request)
         ns = user.get("namespace", "")
         search_term = q or query
-        return await search_indexer.search(search_term, domain=domain, namespace=ns or None, limit=limit)
+        return await search_indexer.search(search_term, domain=domain, namespace=ns or "", limit=limit)
 
     # ─── Write API ─────────────────────────────────────────────────
     @app.post("/api/memory-graph/create")

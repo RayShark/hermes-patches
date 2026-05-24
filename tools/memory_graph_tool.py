@@ -108,6 +108,19 @@ def _run(coro):
 
 
 
+def _resolve_namespace_arg(args) -> str:
+    """Respect an explicitly supplied namespace, including the empty core namespace.
+
+    `args.get('namespace') or _get_namespace()` makes it impossible for tests,
+    admin tools, and maintenance code to intentionally query shared core because
+    an explicit empty string falls through to the terminal/default user. Use this
+    helper anywhere a tool accepts an optional namespace override.
+    """
+    sentinel = object()
+    explicit = args.get("namespace", sentinel)
+    return _get_namespace() if explicit is sentinel else (explicit or "")
+
+
 def _refresh_search_index(node_uuid: str, namespace: str) -> None:
     """Best-effort sync of derived Memory Graph search rows after tool writes."""
     if not node_uuid:
@@ -132,7 +145,7 @@ def _read(args, **kw):
     from agent.memory_graph.services.system_views import handle_system_uri
     uri = args.get("uri", "")
     domain, path = _parse_uri(uri, args.get("domain", "core"))
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     if domain == "system":
         result = _run(handle_system_uri(path, GraphService(), None))
         return json.dumps(result, ensure_ascii=False, default=str)
@@ -147,7 +160,7 @@ def _create(args, **kw):
     from agent.memory_graph.services.graph import GraphService
     parent_uri = args.get("parent_uri", "")
     domain, parent_path = _parse_uri(parent_uri, args.get("domain", "core"))
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     content = args["content"]
 
     # Zero-default: user data MUST have namespace
@@ -170,7 +183,7 @@ def _update(args, **kw):
     from agent.memory_graph.services.graph import GraphService
     uri = args.get("uri", "")
     domain, path = _parse_uri(uri, args.get("domain", "core"))
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     result = _run(GraphService().update_memory(
         path, args["content"], domain=domain, namespace=ns,
         priority=args.get("priority"),
@@ -184,7 +197,7 @@ def _delete(args, **kw):
     from agent.memory_graph.services.graph import GraphService
     uri = args.get("uri", "")
     domain, path = _parse_uri(uri, args.get("domain", "core"))
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     node = _run(GraphService().get_memory_by_path(path, domain=domain, namespace=ns))
     node_uuid = (node or {}).get("node_uuid", "")
     result = _run(GraphService().delete_memory(path, domain=domain, namespace=ns))
@@ -199,7 +212,7 @@ def _list(args, **kw):
     from agent.memory_graph.db.models import ROOT_NODE_UUID
     uri = args.get("uri", "")
     domain, path = _parse_uri(uri, args.get("domain", "core"))
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     graph = GraphService()
     if path:
         node = _run(graph.get_memory_by_path(path, domain=domain, namespace=ns))
@@ -219,10 +232,10 @@ def _list(args, **kw):
 def _search(args, **kw):
     _ensure_db()
     from agent.memory_graph.services.search import SearchIndexer
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     results = _run(SearchIndexer().search(
         args["query"], domain=args.get("domain") or None,
-        namespace=ns or None, limit=args.get("limit", 20),
+        namespace=ns or "", limit=args.get("limit", 20),
     ))
     return json.dumps({"query": args["query"], "namespace": ns, "results": results, "count": len(results)},
                        ensure_ascii=False, default=str)
@@ -235,7 +248,7 @@ def _alias(args, **kw):
     alias_uri = args.get("alias_uri", "")
     domain, path = _parse_uri(uri, args.get("domain", "core"))
     alias_domain, alias_path = _parse_uri(alias_uri, domain)
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     result = _run(GraphService().add_alias(path, alias_path, domain=domain, alias_domain=alias_domain, namespace=ns))
     _refresh_search_index(result.get("node_uuid", ""), ns)
     return json.dumps(result, ensure_ascii=False, default=str)
@@ -247,7 +260,7 @@ def _glossary_add(args, **kw):
     from agent.memory_graph.services.glossary import GlossaryService
     node_uri = args.get("node_uri", "")
     domain, path = _parse_uri(node_uri, args.get("domain", "core"))
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     node = _run(GraphService().get_memory_by_path(path, domain=domain, namespace=ns))
     if not node:
         return json.dumps({"error": f"Node not found: {domain}://{path}"})
@@ -259,7 +272,7 @@ def _glossary_add(args, **kw):
 def _glossary_scan(args, **kw):
     _ensure_db()
     from agent.memory_graph.services.glossary import GlossaryService
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     matches = _run(GlossaryService().scan_content(args["content"], namespace=ns))
     return json.dumps({"matches": matches, "count": len(matches)},
                        ensure_ascii=False, default=str)
@@ -440,7 +453,7 @@ _TOOLSET = "memory_graph"
 def _recall(args, **kw):
     _ensure_db()
     from agent.memory_graph.services.graph import GraphService
-    ns = args.get("namespace") or _get_namespace()
+    ns = _resolve_namespace_arg(args)
     results = _run(GraphService().weighted_random_recall(namespace=ns, limit=args.get("limit", 5)))
     return json.dumps({"recalled": results, "count": len(results)}, ensure_ascii=False, default=str)
 

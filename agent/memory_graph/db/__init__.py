@@ -90,7 +90,10 @@ def _current_rls_context() -> Tuple[str, bool]:
         if default_user:
             namespace = f"telegram:{default_user}"
     admin_ids = set(str(x) for x in (mg_cfg.get("admin_platform_ids") or []))
-    if namespace in admin_ids:
+    # Config stores admin IDs as platform:id (e.g. telegram:735...), while
+    # namespace is the same string for DM users. Keep this exact and explicit;
+    # an empty namespace must not accidentally become admin.
+    if namespace and namespace in admin_ids:
         is_admin = True
     return namespace, is_admin
 

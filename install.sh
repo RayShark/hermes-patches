@@ -141,6 +141,12 @@ if [ -d "$PATCHES_DIR/web/src/types" ]; then
     cp -R "$PATCHES_DIR/web/src/types/." "$HERMES_DIR/web/src/types/"
     echo "   ✅ web/src/types 已复制"
 fi
+if [ -d "$PATCHES_DIR/hermes_cli/web_dist" ]; then
+    rm -rf "$HERMES_DIR/hermes_cli/web_dist"
+    mkdir -p "$HERMES_DIR/hermes_cli"
+    cp -R "$PATCHES_DIR/hermes_cli/web_dist" "$HERMES_DIR/hermes_cli/web_dist"
+    echo "   ✅ hermes_cli/web_dist 已复制"
+fi
 if [ -f "$HERMES_DIR/web/package.json" ] && command -v npm >/dev/null 2>&1; then
     if [ -x "$HERMES_DIR/web/node_modules/.bin/tsc" ] || [ -x "$HERMES_DIR/web/node_modules/.bin/vite" ]; then
         (cd "$HERMES_DIR/web" && npm run build)

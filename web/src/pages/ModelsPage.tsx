@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Brain,
@@ -774,6 +774,7 @@ export default function ModelsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saveKey, setSaveKey] = useState(0);
+  const loadRunId = useRef(0);
   // Gate the token/cost UI on `dashboard.show_token_analytics`.  See
   // hermes_cli/config.py for the rationale: the numbers exclude auxiliary
   // calls and retries, so they're misleading next to provider billing.
@@ -794,32 +795,55 @@ export default function ModelsPage() {
       });
   }, []);
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
+    const runId = ++loadRunId.current;
     setLoading(true);
-    setError(null);
-    Promise.allSettled([
+
+    const [modelsResult, auxResult] = await Promise.allSettled([
       api.getModelsAnalytics(days),
       api.getAuxiliaryModels(),
-    ])
-      .then(([modelsResult, auxResult]) => {
-        if (auxResult.status === "fulfilled") {
-          setAux(auxResult.value);
-        }
-        if (modelsResult.status === "fulfilled") {
-          setData(modelsResult.value);
-        } else {
-          setData(null);
-          const reason = modelsResult.reason;
-          const message = reason instanceof Error ? reason.message : String(reason);
-          setError(`Analytics unavailable: ${message}`);
-        }
-        if (auxResult.status === "rejected") {
-          const reason = auxResult.reason;
-          const message = reason instanceof Error ? reason.message : String(reason);
-          setError((prev) => prev ?? `Model settings unavailable: ${message}`);
-        }
-      })
-      .finally(() => setLoading(false));
+    ]);
+
+    if (loadRunId.current !== runId) return;
+
+    if (auxResult.status === "fulfilled") {
+      setAux(auxResult.value);
+    }
+
+    if (modelsResult.status === "fulfilled") {
+      setData(modelsResult.value);
+      setError(null);
+    } else {
+      const firstReason = modelsResult.reason;
+      const firstMessage = firstReason instanceof Error ? firstReason.message : String(firstReason);
+
+      // Safari/WebKit can occasionally throw a generic "Load failed" for the
+      // analytics request even when the backend is healthy. Retry once before
+      // surfacing a partial-load warning, and keep any previously loaded data.
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      if (loadRunId.current !== runId) return;
+
+      const retry = await Promise.allSettled([api.getModelsAnalytics(days)]);
+      const retryResult = retry[0];
+      if (retryResult.status === "fulfilled") {
+        setData(retryResult.value);
+        setError(null);
+      } else {
+        const retryReason = retryResult.reason;
+        const retryMessage = retryReason instanceof Error ? retryReason.message : String(retryReason);
+        setError(`Analytics unavailable: ${retryMessage || firstMessage}`);
+      }
+    }
+
+    if (auxResult.status === "rejected") {
+      const reason = auxResult.reason;
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError((prev) => prev ?? `Model settings unavailable: ${message}`);
+    }
+
+    if (loadRunId.current === runId) {
+      setLoading(false);
+    }
   }, [days]);
 
   const onAssigned = useCallback(() => {

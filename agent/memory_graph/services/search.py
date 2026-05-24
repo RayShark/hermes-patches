@@ -247,24 +247,44 @@ class SearchIndexer:
         "coalesce(sd.search_terms, '')"
     )
 
+    @staticmethod
+    def _to_or_tsquery(normalized_query: str) -> str:
+        """Convert normalized whitespace-delimited tokens into a safe OR tsquery.
+
+        PostgreSQL websearch/plainto parsing effectively behaves too narrowly for
+        multi-facet memory questions: one unrelated token can make a stored fact
+        disappear. Memory recall should prefer broad candidate retrieval followed
+        by ranking, so we OR unique sanitized tokens here.
+        """
+        tokens = []
+        seen = set()
+        for raw in (normalized_query or "").split():
+            token = "".join(ch for ch in raw if ch.isalnum() or ch == "_")
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+        return " | ".join(tokens)
+
     async def search(
         self, query: str, limit: int = 10, domain: Optional[str] = None, namespace: str = ""
     ) -> List[Dict[str, Any]]:
-        """Search memories using PostgreSQL tsvector with ts_rank_cd ranking.
+        """Search memories using PostgreSQL tsvector with broad candidate recall.
 
-        Uses websearch_to_tsquery('simple', ...) for query parsing (supports
-        quoted phrases, AND/OR operators, minus exclusion).  Falls back to
-        ILIKE for very short queries (< 3 chars) where tsvector produces
-        empty tsqueries.
+        Multi-token memory questions are converted into an OR tsquery so a
+        canonical fact can still surface when the user's message contains
+        several facets. Ranking, path priority, and snippets decide the final
+        order. Very short / unsafely tokenized queries fall back to ILIKE.
         """
         if not query.strip():
             return []
 
         # Normalize query for tsvector
         normalized = expand_query_terms(query)
+        or_ts_query = self._to_or_tsquery(normalized)
 
-        # For very short queries, fall back to ILIKE
-        use_ilike = len(query.strip()) < 3
+        # For very short queries or empty tokenization, fall back to ILIKE
+        use_ilike = len(query.strip()) < 3 or not or_ts_query
 
         async with self._session_factory() as session:
             if use_ilike:
@@ -279,7 +299,7 @@ class SearchIndexer:
                 )
                 stmt = (
                     select(SearchDocument)
-                    .where(SearchDocument.namespace == namespace)
+                    .where(or_(SearchDocument.namespace == namespace, SearchDocument.namespace == "", SearchDocument.namespace.is_(None)))
                     .where(ilike_cond)
                     .order_by(SearchDocument.priority.asc())
                     .limit(limit * 5)
@@ -289,10 +309,10 @@ class SearchIndexer:
                 result = await session.execute(stmt)
                 rows = result.scalars().all()
             else:
-                # tsvector full-text search with ranking
+                # tsvector full-text search with broad OR ranking
                 search_text = self._SEARCH_TEXT_EXPR
                 domain_clause = ""
-                params: dict = {"namespace": namespace, "ts_query": normalized, "candidate_limit": limit * 5}
+                params: dict = {"namespace": namespace, "ts_query": or_ts_query, "raw_query": query, "candidate_limit": limit * 5}
                 if domain is not None:
                     domain_clause = "AND sd.domain = :domain"
                     params["domain"] = domain
@@ -310,14 +330,32 @@ class SearchIndexer:
                             sd.disclosure,
                             ts_rank_cd(
                                 to_tsvector('simple', {search_text}),
-                                websearch_to_tsquery('simple', :ts_query)
-                            ) AS score
+                                to_tsquery('simple', :ts_query)
+                            ) AS score,
+                            CASE
+                                WHEN sd.namespace = :namespace AND sd.namespace <> '' THEN 0
+                                WHEN sd.namespace = '' OR sd.namespace IS NULL THEN 1
+                                ELSE 2
+                            END AS namespace_rank
                         FROM {SearchDocument.__tablename__} AS sd
-                        WHERE sd.namespace = :namespace
+                        WHERE (sd.namespace = :namespace OR sd.namespace = '' OR sd.namespace IS NULL)
                           AND to_tsvector('simple', {search_text})
-                              @@ websearch_to_tsquery('simple', :ts_query)
+                              @@ to_tsquery('simple', :ts_query)
                           {domain_clause}
-                        ORDER BY score DESC, sd.priority ASC, char_length(sd.path) ASC
+                        ORDER BY
+                            CASE WHEN sd.path ILIKE '%' || :raw_query || '%' OR sd.content ILIKE '%' || :raw_query || '%' THEN 0 ELSE 1 END ASC,
+                            CASE
+                                WHEN sd.path LIKE '用户档案%' THEN 0
+                                WHEN sd.path LIKE '项目%' THEN 1
+                                WHEN sd.path LIKE '系统架构%' THEN 2
+                                WHEN sd.path LIKE '工具与配置%' THEN 3
+                                WHEN sd.path LIKE '经验教训%' THEN 4
+                                ELSE 5
+                            END ASC,
+                            score DESC,
+                            namespace_rank ASC,
+                            sd.priority ASC,
+                            char_length(sd.path) ASC
                         LIMIT :candidate_limit
                         """
                     ),
@@ -333,25 +371,26 @@ class SearchIndexer:
             seen_nodes: set = set()
             for row in rows:
                 if is_tsvector:
-                    m = row._mapping
-                    node_uuid = m.get("node_uuid")
+                    mapping = row._mapping
+                    node_uuid = mapping.get("node_uuid")
                 else:
+                    mapping = None
                     node_uuid = row.node_uuid
                 if node_uuid in seen_nodes:
                     continue
                 seen_nodes.add(node_uuid)
 
-                if is_tsvector:
+                if mapping is not None:
                     # RowProxy (tsvector path)
                     matches.append({
-                        "domain": m["domain"],
-                        "path": m["path"],
-                        "uri": m["uri"],
-                        "name": m["path"].rsplit("/", 1)[-1],
-                        "snippet": self._format_search_snippet(m["content"], query),
-                        "priority": m["priority"],
-                        "disclosure": m["disclosure"],
-                        "score": float(m.get("score", 0)),
+                        "domain": mapping["domain"],
+                        "path": mapping["path"],
+                        "uri": mapping["uri"],
+                        "name": mapping["path"].rsplit("/", 1)[-1],
+                        "snippet": self._format_search_snippet(mapping["content"], query),
+                        "priority": mapping["priority"],
+                        "disclosure": mapping["disclosure"],
+                        "score": float(mapping.get("score", 0)),
                     })
                 else:
                     # ORM object (ILIKE path)
@@ -364,7 +403,36 @@ class SearchIndexer:
                         "priority": row.priority,
                         "disclosure": row.disclosure,
                     })
-                if len(matches) >= limit:
-                    break
 
-            return matches
+            terms = [t for t in expand_query_terms(query).split() if len(t) >= 2]
+
+            def _path_rank(path: str) -> int:
+                if path.startswith("用户档案"):
+                    return 0
+                if path.startswith("项目"):
+                    return 1
+                if path.startswith("系统架构"):
+                    return 2
+                if path.startswith("工具与配置"):
+                    return 3
+                if path.startswith("经验教训"):
+                    return 4
+                return 5
+
+            def _semantic_rank(item: Dict[str, Any]):
+                hay = f"{item.get('uri','')} {item.get('path','')} {item.get('snippet','')}".lower()
+                hit_count = sum(1 for t in terms if t.lower() in hay)
+                long_hit_count = sum(1 for t in terms if len(t) >= 4 and t.lower() in hay)
+                exact_phrase = 1 if query.strip().lower() in hay else 0
+                return (
+                    -exact_phrase,
+                    -long_hit_count,
+                    -hit_count,
+                    -float(item.get("score", 0) or 0),
+                    _path_rank(str(item.get("path", ""))),
+                    int(item.get("priority", 0) or 0),
+                    len(str(item.get("path", ""))),
+                )
+
+            matches.sort(key=_semantic_rank)
+            return matches[:limit]

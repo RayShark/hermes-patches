@@ -72,6 +72,84 @@ from tools.tool_backend_helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _probe_image_generation_capability() -> Dict[str, Any]:
+    """Return a provider-aware capability snapshot for image generation.
+
+    This is the single source of truth for answering which image backend is
+    configured, whether it is registered, whether it is currently available,
+    and at which layer capability resolution failed.
+    """
+    configured_provider = _read_configured_image_provider()
+    configured_model = _read_configured_image_model()
+
+    snapshot: Dict[str, Any] = {
+        "configured_provider": configured_provider,
+        "configured_model": configured_model,
+        "active_provider": None,
+        "provider_registered": False,
+        "provider_available": False,
+        "fal_available": False,
+        "managed_fal_gateway": False,
+        "available": False,
+        "failure_layer": None,
+        "detail": None,
+    }
+
+    managed_gateway = _resolve_managed_fal_gateway()
+    fal_available = bool(check_fal_api_key())
+    snapshot["fal_available"] = fal_available
+    snapshot["managed_fal_gateway"] = bool(managed_gateway)
+
+    provider = None
+    if configured_provider:
+        try:
+            from agent.image_gen_registry import get_provider
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            provider = get_provider(configured_provider)
+        except Exception as exc:
+            snapshot["failure_layer"] = "provider_discovery"
+            snapshot["detail"] = str(exc)
+            return snapshot
+
+        if provider is None:
+            snapshot["failure_layer"] = "provider_not_registered"
+            snapshot["detail"] = (
+                f"Configured image_gen.provider '{configured_provider}' is not registered"
+            )
+            return snapshot
+
+        snapshot["provider_registered"] = True
+        snapshot["active_provider"] = getattr(provider, "name", None)
+        try:
+            available = bool(provider.is_available())
+        except Exception as exc:
+            snapshot["failure_layer"] = "provider_availability_check"
+            snapshot["detail"] = str(exc)
+            return snapshot
+
+        snapshot["provider_available"] = available
+        snapshot["available"] = available
+        if available:
+            return snapshot
+
+        snapshot["failure_layer"] = "provider_unavailable"
+        snapshot["detail"] = (
+            f"Configured image_gen.provider '{configured_provider}' is registered but unavailable"
+        )
+        return snapshot
+
+    snapshot["available"] = fal_available
+    if fal_available:
+        snapshot["active_provider"] = "fal"
+        return snapshot
+
+    snapshot["failure_layer"] = "no_backend_configured"
+    snapshot["detail"] = "No configured provider is available and FAL fallback is unavailable"
+    return snapshot
+
+
 # ---------------------------------------------------------------------------
 # FAL model catalog
 # ---------------------------------------------------------------------------
@@ -703,16 +781,46 @@ def check_fal_api_key() -> bool:
 
 
 def _build_no_backend_setup_message() -> str:
-    """Build an actionable error string when no FAL backend is reachable.
+    """Build an actionable error string when no image-gen backend is reachable.
 
-    Used by the in-tree FAL path. Mentions:
-      - FAL_KEY signup link
-      - managed-gateway status (if Nous tools are enabled)
-      - plugin alternative pointer (so users on a stale ``image_gen.provider``
-        know the registry exists and how to inspect it)
+    This must reflect the *actual configured image-generation route*, not just
+    the historical in-tree FAL path. Otherwise agents can incorrectly tell the
+    user that image generation is unavailable when a plugin backend (for
+    example OpenAI) is configured and healthy.
     """
     lines = ["Image generation is unavailable in this environment.", ""]
     lines.append("Missing requirements:")
+
+    probe = _probe_image_generation_capability()
+    configured_provider = probe.get("configured_provider")
+    configured_model = probe.get("configured_model")
+
+    if configured_provider and configured_provider != "fal":
+        lines.append(
+            f"  - Configured image_gen.provider '{configured_provider}' is not currently available"
+        )
+        if probe.get("failure_layer"):
+            lines.append(f"  - Failure layer: {probe['failure_layer']}")
+        lines.append("")
+        lines.append("To restore image generation, check:")
+        lines.append(
+            "  1. `hermes tools` → Image Generation: confirm the selected provider and model"
+        )
+        lines.append(
+            "  2. `hermes plugins list`: verify that the configured image backend is installed/registered"
+        )
+        lines.append(
+            "  3. Provider credentials / endpoint config (for example OPENAI_API_KEY / OPENAI_BASE_URL for OpenAI-compatible routes)"
+        )
+        if configured_model:
+            lines.append(
+                f"  4. Confirm the configured model '{configured_model}' is supported by that provider"
+            )
+        lines.append(
+            "  5. If the selected provider is broken, switch providers via `hermes tools` instead of assuming FAL is the active route"
+        )
+        return "\n".join(lines)
+
     if managed_nous_tools_enabled():
         lines.append(
             "  - FAL_KEY is not set and the managed FAL gateway is unreachable"
@@ -741,16 +849,14 @@ def _build_no_backend_setup_message() -> str:
 def check_image_generation_requirements() -> bool:
     """True if any image gen backend is available.
 
-    Providers are considered in this order:
-
-    1. The in-tree FAL backend (FAL_KEY or managed gateway).
-    2. Any plugin-registered provider whose ``is_available()`` returns True.
-
-    Plugins win only when the in-tree FAL path is NOT ready, which matches
-    the historical behavior: shipping hermes with a FAL key configured
-    should still expose the tool. The active selection among ready
-    providers is resolved per-call by ``image_gen.provider``.
+    Prefers the explicitly configured provider when one is set. This prevents
+    capability checks from silently falling back to a different backend and
+    then giving the user the wrong diagnosis about which route actually failed.
     """
+    probe = _probe_image_generation_capability()
+    if probe.get("configured_provider") and probe.get("configured_provider") != "fal":
+        return bool(probe.get("available"))
+
     try:
         if check_fal_api_key():
             # Trigger the lazy fal_client import here as the SDK presence
@@ -844,6 +950,22 @@ IMAGE_GENERATE_SCHEMA = {
             },
         },
         "required": ["prompt"],
+    },
+}
+
+
+IMAGE_CAPABILITY_DIAGNOSE_SCHEMA = {
+    "name": "image_capability_diagnose",
+    "description": (
+        "Diagnose the currently configured image-generation route and return a "
+        "provider-aware capability snapshot. Use this before declaring image "
+        "generation unavailable: it reports the configured provider/model, "
+        "whether the provider is registered and available, whether FAL fallback "
+        "is available, and the failure layer if capability resolution failed."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
     },
 }
 
@@ -993,6 +1115,10 @@ def _handle_image_generate(args, **kw):
     )
 
 
+def _handle_image_capability_diagnose(args, **kw):
+    return json.dumps(_probe_image_generation_capability(), ensure_ascii=False)
+
+
 IMAGE_EDIT_SCHEMA = {
     "name": "image_edit",
     "description": (
@@ -1076,4 +1202,15 @@ registry.register(
     requires_env=[],
     is_async=False,
     emoji="🖼️",
+)
+
+registry.register(
+    name="image_capability_diagnose",
+    toolset="image_gen",
+    schema=IMAGE_CAPABILITY_DIAGNOSE_SCHEMA,
+    handler=_handle_image_capability_diagnose,
+    check_fn=lambda: True,
+    requires_env=[],
+    is_async=False,
+    emoji="🩺",
 )

@@ -1,7 +1,9 @@
 """CJK-aware search tokenization for Memory Graph.
 
-Ported from Nocturne Memory's search_terms.py.
-Uses jieba for Chinese/Japanese/Korean word segmentation.
+Designed for prompt-time recall: deterministic, fast, and no runtime dictionary
+load on the hot path. Jieba is optional only for registering glossary words when
+already available; CJK query/document tokenization preserves full runs and
+2-8-character compounds.
 """
 
 import re
@@ -60,12 +62,19 @@ class SearchTokenizer:
 
     @classmethod
     def _segment_cjk(cls, text: str) -> List[str]:
-        """Segment a CJK string into words using jieba."""
-        if not _HAS_JIEBA:
-            # Fallback: split into individual characters
-            return [c for c in text if c.strip()]
-        words = [word.strip() for word in jieba.cut_for_search(text) if word.strip()]
-        return cls.dedupe(words or [text])
+        """Segment a CJK string without runtime dictionary loading.
+
+        Jieba's first-use dictionary/cache load can block prompt-time recall on
+        small servers or when /tmp cache is stale. For Memory Graph search we
+        prefer deterministic, fast recall tokens over perfect linguistic
+        segmentation: preserve the full run and all 2-8 char compounds.
+        """
+        text = (text or "").strip()
+        if not text:
+            return []
+        tokens: List[str] = [text]
+        tokens.extend(cls._preserve_compound_cjk_terms(text))
+        return cls.dedupe(tokens)
 
     @classmethod
     def tokenize(cls, text: str) -> List[str]:
@@ -84,9 +93,29 @@ class SearchTokenizer:
         return cls.dedupe(tokens)
 
 
+    @staticmethod
+    def _preserve_compound_cjk_terms(text: str) -> List[str]:
+        """Keep long CJK compounds alongside jieba segments.
+
+        Some Memory Graph paths/titles are meaningful compounds (e.g. 误差以内,
+        未来伴侣, 宏观理性). Jieba can split them into common words, which makes
+        broad OR recall overmatch. Preserving 2-8 char sliding compounds gives
+        exact title/path hits enough score to beat generic memories.
+        """
+        terms: List[str] = []
+        for run in SearchTokenizer.CJK_RUN_RE.findall(text or ""):
+            n = len(run)
+            for size in range(min(8, n), 1, -1):
+                for i in range(0, n - size + 1):
+                    terms.append(run[i:i + size])
+        return terms
+
+
 def expand_query_terms(query: str) -> str:
-    """Normalize query text into jieba-segmented tokens for search."""
-    return " ".join(SearchTokenizer.tokenize(query))
+    """Normalize query text into jieba-segmented tokens plus CJK compounds."""
+    tokens = SearchTokenizer.tokenize(query)
+    tokens.extend(SearchTokenizer._preserve_compound_cjk_terms(query))
+    return " ".join(SearchTokenizer.dedupe(tokens))
 
 
 def build_document_search_terms(
