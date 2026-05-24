@@ -37,13 +37,17 @@ function setSessionHeader(headers: Headers, token: string): void {
 }
 
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  // Inject the session token into all /api/ requests.
+  // Mutating/API-special requests keep using the injected session header.
+  // Plain GETs rely on the same-origin HttpOnly session cookie set by the
+  // dashboard HTML response. This avoids Safari/iPad preflight failures caused
+  // by custom headers on read-only API requests.
+  const method = (init?.method ?? "GET").toUpperCase();
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
-  if (token) {
+  if (token && (method !== "GET" || headers.has(SESSION_HEADER))) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  const res = await fetch(`${BASE}${url}`, { ...init, headers, credentials: "same-origin" });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);

@@ -85,6 +85,7 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_SESSION_COOKIE_NAME = "hermes_dashboard_session"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
@@ -138,6 +139,13 @@ def _has_valid_session_token(request: Request) -> bool:
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
         session_header.encode(),
+        _SESSION_TOKEN.encode(),
+    ):
+        return True
+
+    cookie_token = request.cookies.get(_SESSION_COOKIE_NAME, "")
+    if cookie_token and hmac.compare_digest(
+        cookie_token.encode(),
         _SESSION_TOKEN.encode(),
     ):
         return True
@@ -3762,10 +3770,20 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
         html = html.replace("</head>", f"{token_script}</head>", 1)
-        return HTMLResponse(
+        response = HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
         )
+        response.set_cookie(
+            _SESSION_COOKIE_NAME,
+            _SESSION_TOKEN,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+            max_age=12 * 60 * 60,
+        )
+        return response
 
     # When served behind a path-prefix proxy, the built CSS contains
     # absolute ``url(/fonts/...)`` and ``url(/ds-assets/...)`` references.
