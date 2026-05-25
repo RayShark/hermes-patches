@@ -393,7 +393,7 @@ class TestUnifiedCronjobTool:
         )
 
         assert result["success"] is False
-        assert "academic identity guard" in result["error"]
+        assert "academic identity contract" in result["error"]
         assert "Geography" in result["error"]
 
     def test_academic_identity_guard_scans_no_agent_script_body(self, tmp_path, monkeypatch):
@@ -500,3 +500,72 @@ class TestUnifiedCronjobTool:
 
         assert updated["success"] is False
         assert "Chemistry" in updated["error"]
+
+    def test_identity_contract_blocks_cross_user_report_clone(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "academic_identity_guard.json").write_text(
+            json.dumps({
+                "users": {
+                    "1111111111": {
+                        "label": "Nitrogen",
+                        "aliases": ["Nitrogen", "Left Student"],
+                        "allowed_subjects": ["Physics", "Economics", "ICT"],
+                    },
+                    "2222222222": {
+                        "label": "Steven",
+                        "aliases": ["Steven", "Steven Shen"],
+                        "allowed_subjects": ["Economics", "Chinese History"],
+                    },
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Generate a weekly anti-bubble report for Steven Shen. Include Steven's learning goals.",
+                schedule="0 8 * * 1",
+                deliver="telegram:1111111111",
+                name="Anti_Bubble_Weekly_Report_Nitrogen",
+            )
+        )
+
+        assert result["success"] is False
+        assert "identity contract mismatch" in result["error"]
+        assert "Steven" in result["error"]
+
+    def test_identity_contract_subject_catalog_allowlist_blocks_unlisted_subject(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "academic_identity_guard.json").write_text(
+            json.dumps({
+                "subject_catalog": {
+                    "Physics": ["Physics", "物理"],
+                    "Economics": ["Economics", "Econ"],
+                    "ICT": ["ICT"],
+                    "Geography": ["Geography", "地理"],
+                },
+                "users": {
+                    "1111111111": {
+                        "label": "Student A",
+                        "aliases": ["Student A"],
+                        "allowed_subjects": ["Physics", "Economics", "ICT"],
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Exam revision plan: Physics, Economics, ICT, and Geography.",
+                schedule="every 1h",
+                deliver="telegram:1111111111",
+                name="Student A exam revision",
+            )
+        )
+
+        assert result["success"] is False
+        assert "outside the user's allowed_subjects" in result["error"]
+        assert "Geography" in result["error"]

@@ -347,13 +347,18 @@ def _cron_academic_identity_guard(
     script: Optional[str] = None,
     deliver: Optional[str] = None,
 ) -> Optional[str]:
-    """Block user-specific academic cron jobs that contradict configured identity facts.
+    """Enforce a deployment-local identity contract for user-targeted cron jobs.
 
-    Root cause addressed: the agent can forget to recall USER_PROFILE/Memory Graph
-    before creating a student cron job. This guard is a tool-level backstop: for
-    configured users, academic-looking cron content delivered to that user cannot
-    include blocked subjects (e.g. whole-grade exam subjects the user does not take)
-    unless the deployment config is changed deliberately.
+    This is intentionally generic:
+    - Target is resolved from explicit delivery (`telegram:<chat_id>`) or session env.
+    - Each target user declares identity aliases and allowed academic subjects.
+    - A global subject catalog maps aliases -> canonical subjects.
+    - Content in prompt *and* no_agent script body is checked.
+
+    The goal is to prevent cross-user/task leakage as a class of bugs, not to
+    maintain per-user ad-hoc `blocked_subjects` patches.  The old
+    `blocked_subjects` key is still honored as a backward-compatible override,
+    but the preferred model is `subject_catalog` + per-user `allowed_subjects`.
     """
     cfg = _load_academic_identity_guard_config()
     users = cfg.get("users") if isinstance(cfg, dict) else None
@@ -364,6 +369,7 @@ def _cron_academic_identity_guard(
     content = "\n".join(part for part in content_parts if part)
     if not content.strip():
         return None
+    lowered = content.lower()
 
     targets = set(_target_chat_ids_for_deliver(deliver))
     # If deliver is origin/local and no explicit target is visible, use session
@@ -378,26 +384,135 @@ def _cron_academic_identity_guard(
         except Exception:
             pass
 
-    for chat_id, rule in users.items():
-        if targets and str(chat_id) not in targets:
-            continue
+    def _aliases(rule: Dict[str, Any], chat_id: str) -> List[str]:
+        vals: List[str] = [str(chat_id)]
+        for key in ("label", "name"):
+            if rule.get(key):
+                vals.append(str(rule[key]))
+        for key in ("aliases", "identity_aliases"):
+            raw = rule.get(key) or []
+            if isinstance(raw, str):
+                vals.append(raw)
+            else:
+                vals.extend(str(x) for x in raw if str(x))
+        out: List[str] = []
+        for v in vals:
+            v = v.strip()
+            if v and v not in out:
+                out.append(v)
+        return out
+
+    def _term_present(term: str, text: str) -> bool:
+        if not term:
+            return False
+        # ASCII terms get token-ish boundaries; CJK phrases are substring terms.
+        if re.fullmatch(r"[A-Za-z0-9_ .@:+-]+", term):
+            return re.search(rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])", text, re.IGNORECASE) is not None
+        return term.lower() in text.lower()
+
+    def _identity_mismatch_phrases(alias: str) -> List[str]:
+        # Only block target-bearing uses, not privacy guard text like
+        # "do not use Steven's private context".
+        compact = alias.replace(" ", r"\s*")
+        return [
+            rf"\bfor\s+{compact}\b",
+            rf"\b{compact}'s\b",
+            rf"\b{compact}\s+shen\b" if alias.lower() == "steven" else r"a^",
+            rf"为\s*{compact}",
+            rf"給\s*{compact}",
+            rf"给\s*{compact}",
+            rf"專為\s*{compact}",
+            rf"专为\s*{compact}",
+            rf"{compact}\s*的",
+            rf"{compact}\s*專屬",
+            rf"{compact}\s*专属",
+            rf"/memories/{re.escape(alias)}/" if alias.isdigit() else r"a^",
+        ]
+
+    def _is_academicish() -> bool:
+        global_triggers = cfg.get("academic_triggers") or []
+        user_triggers: List[str] = []
+        for rule in users.values():
+            if isinstance(rule, dict):
+                raw = rule.get("academic_triggers") or []
+                user_triggers.extend(str(x) for x in raw if str(x))
+        triggers = [str(x) for x in [*global_triggers, *user_triggers] if str(x)]
+        if not triggers:
+            triggers = ["exam", "revision", "study", "homework", "practice", "DSE", "考试", "考試", "温书", "溫書", "复习", "復習", "学业", "學業", "科目"]
+        return any(t.lower() in lowered for t in triggers)
+
+    def _subject_catalog() -> Dict[str, List[str]]:
+        catalog = cfg.get("subject_catalog") or cfg.get("global_subject_catalog") or {}
+        if isinstance(catalog, dict) and catalog:
+            return {str(k): [str(x) for x in (v if isinstance(v, list) else [v]) if str(x)] for k, v in catalog.items()}
+        # Generic DSE-ish fallback; deployments should override/extend this.
+        return {
+            "English": ["English", "英文", "英语", "英語"],
+            "Chinese": ["Chinese", "中文", "中國語文", "中国语文"],
+            "Maths": ["Maths", "Mathematics", "数学", "數學"],
+            "Physics": ["Physics", "物理"],
+            "Chemistry": ["Chemistry", "化学", "化學"],
+            "Biology": ["Biology", "Bio", "生物"],
+            "Economics": ["Economics", "Econ", "经济", "經濟"],
+            "Geography": ["Geography", "地理"],
+            "History": ["History", "歷史", "历史"],
+            "Chinese History": ["Chinese History", "中史", "中国历史", "中國歷史"],
+            "ICT": ["ICT"],
+            "CSD": ["CSD", "公民", "社會發展", "社会发展"],
+            "M1": ["M1"],
+            "M2": ["M2"],
+            "BAFS": ["BAFS"],
+            "Chinese Literature": ["Chinese Literature", "中化", "文学", "文學"],
+        }
+
+    target_ids = targets or set(str(k) for k in users.keys())
+    for chat_id in target_ids:
+        rule = users.get(str(chat_id))
         if not isinstance(rule, dict):
             continue
-        triggers = [str(x) for x in rule.get("academic_triggers", []) if str(x)]
-        if triggers and not any(t.lower() in content.lower() for t in triggers):
-            continue
-        blocked = [str(x) for x in rule.get("blocked_subjects", []) if str(x)]
-        hits = [sub for sub in blocked if re.search(rf"(?<![A-Za-z0-9_]){re.escape(sub)}(?![A-Za-z0-9_])", content, re.IGNORECASE)]
-        if hits:
-            label = rule.get("label") or chat_id
-            rationale = rule.get("rationale") or "academic identity facts contradict this cron content"
-            unique_hits = sorted(set(hits), key=hits.index)
-            return (
-                f"Blocked: academic identity guard for {label} ({chat_id}) found non-user subjects "
-                f"in an academic cron job: {', '.join(unique_hits)}. {rationale} "
-                "Before creating/updating this job, retrieve the user's USER_PROFILE/Memory Graph academic facts "
-                "and remove unrelated whole-grade subjects, or deliberately update academic_identity_guard.json."
-            )
+        label = str(rule.get("label") or rule.get("name") or chat_id)
+
+        # 1) Cross-user identity contract: if a job delivered to user A is
+        # target-bearing for user B, reject. This covers report clones, tutoring
+        # jobs, and prompts reading another user's memory path.
+        for other_id, other_rule in users.items():
+            if str(other_id) == str(chat_id) or not isinstance(other_rule, dict):
+                continue
+            for alias in _aliases(other_rule, str(other_id)):
+                for pat in _identity_mismatch_phrases(alias):
+                    if re.search(pat, content, re.IGNORECASE):
+                        other_label = other_rule.get("label") or other_rule.get("name") or other_id
+                        return (
+                            f"Blocked: identity contract mismatch. Cron delivery targets {label} ({chat_id}) "
+                            f"but content appears target-bearing for {other_label} ({other_id}) via alias {alias!r}. "
+                            "Use explicit per-user job names, deliver targets, and prompts; do not clone reports across users without rewriting the target contract."
+                        )
+
+        # 2) Academic subject contract: global subject catalog + per-user allowlist.
+        if _is_academicish():
+            allowed = {str(x) for x in (rule.get("allowed_subjects") or []) if str(x)}
+            catalog = _subject_catalog()
+            mentioned: List[Tuple[str, str]] = []
+            for canonical, aliases in catalog.items():
+                for alias in aliases:
+                    if _term_present(alias, content):
+                        mentioned.append((canonical, alias))
+                        break
+            blocked_legacy = {str(x) for x in (rule.get("blocked_subjects") or []) if str(x)}
+            bad: List[str] = []
+            for canonical, alias in mentioned:
+                if blocked_legacy and (canonical in blocked_legacy or alias in blocked_legacy):
+                    bad.append(f"{canonical} ({alias})")
+                elif allowed and canonical not in allowed and alias not in allowed:
+                    bad.append(f"{canonical} ({alias})")
+            if bad:
+                rationale = rule.get("rationale") or "content mentions subjects outside the target user's declared subject contract"
+                unique_bad = sorted(set(bad), key=bad.index)
+                return (
+                    f"Blocked: academic identity contract for {label} ({chat_id}) found subjects outside the user's allowed_subjects: "
+                    f"{', '.join(unique_bad)}. {rationale} "
+                    "Fix the job content from verified user facts, or update academic_identity_guard.json with the new subject contract."
+                )
     return None
 
 
