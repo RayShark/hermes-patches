@@ -122,3 +122,66 @@ def test_user_correction_maps_to_explicit_correction_policy_type():
     assert result["auto_write_allowed"] is True
     assert result["written"] is True
     assert len(graph.calls) == 1
+
+
+def test_extracts_digital_stand_in_correction_as_procedural_memory_candidate():
+    pipeline = MemoryWritePipeline(config={"mode": "shadow"})
+    reflection = pipeline.reflect_and_extract(
+        "你又没主动存，太气人了。以后我纠正你错误时要先调查根因，再抽象通用防复发机制。",
+        "",
+    )
+
+    candidates = reflection["candidates"]
+    assert any(c.subject == "agent_memory_workflow" and c.memory_type == "procedural_memory" for c in candidates)
+    c = next(c for c in candidates if c.subject == "agent_memory_workflow")
+    assert c.importance >= 0.95
+    assert c.source_type == "user_correction"
+    assert "程序性记忆" in c.target_path
+
+
+def test_extracts_creative_target_function_from_writing_taste():
+    pipeline = MemoryWritePipeline(config={"mode": "shadow"})
+    reflection = pipeline.reflect_and_extract(
+        "我觉得低频心跳的小说写作应该避免 AI 味，要有普通生活细节的重量和漫画质感。",
+        "",
+    )
+
+    candidates = reflection["candidates"]
+    assert any(c.subject == "creative_target_function" and c.memory_type == "target_function" for c in candidates)
+
+
+def test_extracts_tool_credential_route_without_auto_writing_secret_route():
+    graph = FakeGraphClient()
+    pipeline = MemoryWritePipeline(
+        graph_client=graph,
+        config={
+            "mode": "limited_auto",
+            "auto_write_threshold": 0.85,
+            "allowed_auto_types": ["procedural_memory"],
+            "never_auto_write_to_core": True,
+        },
+    )
+    reflection = pipeline.reflect_and_extract(
+        "以后需要 Claude Code 审计时可以用 Claude，not logged in 时先查已有配置和凭据路径。",
+        "",
+    )
+
+    c = next(c for c in reflection["candidates"] if c.subject == "tool_credential_route")
+    classification = pipeline.classify_write(c, namespace="telegram:u1")
+    result = pipeline.write_and_verify(c, classification)
+
+    assert c.requires_review is True
+    assert classification["target_store"] == "review"
+    assert result["auto_write_allowed"] is False
+    assert graph.calls == []
+
+
+def test_extracts_exam_context_for_future_recall():
+    pipeline = MemoryWritePipeline(config={"mode": "shadow"})
+    reflection = pipeline.reflect_and_extract(
+        "我下周要考试，这是时间表和考试范围，帮我按 DSE 科目安排复习。",
+        "",
+    )
+
+    candidates = reflection["candidates"]
+    assert any(c.subject == "exam_context" and c.memory_type == "user_fact" for c in candidates)

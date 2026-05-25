@@ -193,6 +193,63 @@ class MemoryWritePipeline:
 
         candidates = []
 
+        # Extract durable meta-learning / target-function signals from the user
+        # message. These are not ordinary facts; they are reusable operating
+        # constraints that should later become procedural memory, skills, or
+        # reject gates after review/readback. Keep this user-text-only so the
+        # assistant cannot promote its own apology into a memory.
+        meta_learning_patterns = [
+            (
+                r'(纠正|错了|不对|又没|太气人|记不住|不会主动存|不会主动召回|防复发|根因|通用(?:的)?(?:解决方案|机制)|目标函数|reject gate|外置大脑|数字替身)',
+                'agent_memory_workflow',
+                'procedural_memory',
+                0.95,
+                'User correction / digital-stand-in target-function signal',
+            ),
+            (
+                r'(小说|写作|低频心跳|漫画|审美|AI味|AI 味|文学|角色|叙事).{0,80}(应该|不要|避免|偏好|喜欢|标准|质感|风格)',
+                'creative_target_function',
+                'target_function',
+                0.90,
+                'User stated durable creative/writing taste or target function',
+            ),
+            (
+                r'(Claude Code|Claude|Codex|GitHub|github|token|PAT|api key|API key|凭据|not logged in|登录).{0,120}(先查|记忆|配置|凭据|用|审计|给过|不要|不能|可以)',
+                'tool_credential_route',
+                'procedural_memory',
+                0.90,
+                'User stated durable tool/credential lookup route; store route, never raw secret',
+            ),
+            (
+                r'(下周|明天|考试|时间表|范围|DSE|mock|科目|复习).{0,120}(考试|时间表|范围|复习|安排|科目|DSE|mock)',
+                'exam_context',
+                'user_fact',
+                0.88,
+                'User provided durable exam context that future planning must recall',
+            ),
+        ]
+        for pattern, subject, memory_type, importance_score, reason in meta_learning_patterns:
+            if re.search(pattern, user_msg, re.IGNORECASE):
+                target_path = '用户档案/目标函数' if memory_type == 'target_function' else '用户档案/程序性记忆'
+                if subject == 'tool_credential_route':
+                    target_path = '用户档案/工具凭据查找规则'
+                elif subject == 'exam_context':
+                    target_path = '用户档案/考试上下文'
+                candidates.append(CandidateFact(
+                    subject=subject,
+                    predicate='derived_from_user_signal',
+                    object_value=user_msg[:500],
+                    importance=importance_score,
+                    memory_type=memory_type,
+                    target_store='memory_graph',
+                    target_path=target_path,
+                    evidence_quote=user_msg[:500],
+                    confidence=0.90,
+                    source_type='user_correction' if subject == 'agent_memory_workflow' else 'user_direct',
+                    requires_review=(subject == 'tool_credential_route'),
+                    reason=reason,
+                ))
+
         # Extract user corrections
         correction_patterns = [
             r'不是\s*(\d+)\s*[,，]?\s*是\s*(\d+)',

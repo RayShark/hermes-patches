@@ -4177,6 +4177,21 @@ def run_conversation(
                 _user_id = getattr(agent, '_user_id', '') or ''
                 _chat_id = getattr(agent, '_chat_id', '') or ''
                 _namespace = f"telegram:{_chat_id}" if _chat_id else ""
+                if not _namespace:
+                    try:
+                        from agent.request_context import get_namespace as _mw_get_namespace
+                        _namespace = _mw_get_namespace() or ""
+                    except Exception:
+                        _namespace = ""
+                if not _namespace:
+                    try:
+                        from hermes_cli.config import load_config as _mw_load_config
+                        _mw_cfg = _mw_load_config() or {}
+                        _mw_default_user = str((_mw_cfg.get("memory_graph") or {}).get("default_terminal_user") or "").strip()
+                        if _mw_default_user:
+                            _namespace = f"telegram:{_mw_default_user}"
+                    except Exception:
+                        _namespace = ""
 
                 _candidate_payloads = []
                 _auto_write_results = []

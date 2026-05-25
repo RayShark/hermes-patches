@@ -396,8 +396,19 @@ if command -v systemctl >/dev/null 2>&1 && [ -d "$PATCHES_DIR/systemd" ]; then
 fi
 
 # 9. Copy memory-graph plugin
-if [ -d "$HOME/.hermes/plugins/memory-graph" ]; then
+if [ -d "$PATCHES_DIR/plugins/memory-graph" ]; then
+    mkdir -p "$HOME/.hermes/plugins/memory-graph"
+    cp -R "$PATCHES_DIR/plugins/memory-graph/." "$HOME/.hermes/plugins/memory-graph/"
+    echo "   ✅ memory-graph plugin overlay 已复制"
+elif [ -d "$HOME/.hermes/plugins/memory-graph" ]; then
     echo "   ✅ memory-graph plugin 已存在"
 else
     echo "   ⚠️ memory-graph plugin 不存在，请手动安装"
+fi
+
+# 10. Copy regression tests when present (non-runtime, but protects future updates)
+if [ -d "$PATCHES_DIR/tests" ]; then
+    mkdir -p "$HERMES_DIR/tests"
+    cp -R "$PATCHES_DIR/tests/." "$HERMES_DIR/tests/"
+    echo "   ✅ tests overlay 已复制"
 fi
