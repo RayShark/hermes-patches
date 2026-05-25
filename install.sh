@@ -73,7 +73,7 @@ if [ -s "$PATCH_FILE" ]; then
 fi
 
 # 2. Copy agent modules / patched core files
-for module in memory_metacognition.py memory_semantic_classifier.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py request_context.py agent_init.py agent_runtime_helpers.py conversation_loop.py memory_provider.py tool_executor.py image_gen_provider.py; do
+for module in memory_metacognition.py memory_semantic_classifier.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py request_context.py skill_router.py agent_init.py agent_runtime_helpers.py conversation_loop.py memory_provider.py tool_executor.py image_gen_provider.py; do
     if [ -f "$PATCHES_DIR/agent/$module" ]; then
         cp "$PATCHES_DIR/agent/$module" "$HERMES_DIR/agent/"
         echo "   ✅ agent/$module 已复制"
@@ -249,6 +249,7 @@ find "$HERMES_DIR/agent" -name "memory_write_pipeline*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "shadow_write_logger*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "hindsight_access_tracker*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "hindsight_reranker*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "skill_router*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/tools" -name "memory_graph_tool*.pyc" -delete 2>/dev/null
 if [ -d "$HERMES_DIR/plugins/memory/hindsight" ]; then
     find "$HERMES_DIR/plugins/memory/hindsight" -name "*.pyc" -delete 2>/dev/null

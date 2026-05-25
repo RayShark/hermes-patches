@@ -443,6 +443,44 @@ def run_conversation(
             _should_review_memory = True
             agent._turns_since_memory = 0
 
+    # Auto-load mandatory skills before the first model token.  This is a
+    # code-level pre-execution gate for high-cost routing failures: long-horizon
+    # work, Hermes self-maintenance, Memory OS/patch work, and user-reported
+    # skill-routing misses must not rely on the model remembering to call
+    # skill_view() after it has already started answering.
+    try:
+        from agent.skill_router import (
+            build_autoload_skill_messages,
+            log_skill_route_decision,
+            maybe_log_routing_failure,
+        )
+        _skill_messages, _skill_route_decision = build_autoload_skill_messages(
+            str(user_message or ""),
+            task_id=effective_task_id,
+        )
+        log_skill_route_decision(
+            _skill_route_decision,
+            user_message=str(user_message or ""),
+            session_id=getattr(agent, "session_id", None),
+            platform=getattr(agent, "platform", None),
+        )
+        maybe_log_routing_failure(
+            _skill_route_decision,
+            user_message=str(user_message or ""),
+            session_id=getattr(agent, "session_id", None),
+        )
+        if _skill_messages:
+            messages.extend(_skill_messages)
+            logger.info(
+                "skill router autoloaded mandatory skills: session=%s skills=%s",
+                getattr(agent, "session_id", None) or "none",
+                ",".join(_skill_route_decision.mandatory_skills),
+            )
+    except Exception as exc:
+        # Fail open for availability, but make the failure visible.  The router
+        # is a guardrail; a bug in it should not make every chat unusable.
+        logger.warning("Skill router pre-execution gate failed: %s", exc)
+
     # Add user message
     user_msg = {"role": "user", "content": user_message}
     messages.append(user_msg)
