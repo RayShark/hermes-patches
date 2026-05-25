@@ -4174,8 +4174,9 @@ def run_conversation(
             _candidates = _reflection.get("candidates", [])
 
             if _candidates:
-                _user_id = getattr(agent, '_user_id', '') or ''
-                _chat_id = getattr(agent, '_chat_id', '') or ''
+                _user_id = str(getattr(agent, '_user_id', '') or '')
+                _chat_id = str(getattr(agent, '_chat_id', '') or '')
+                _platform = str(getattr(agent, '_platform', '') or getattr(agent, 'platform', '') or '')
                 _namespace = f"telegram:{_chat_id}" if _chat_id else ""
                 if not _namespace:
                     try:
@@ -4183,6 +4184,20 @@ def run_conversation(
                         _namespace = _mw_get_namespace() or ""
                     except Exception:
                         _namespace = ""
+                if not _namespace:
+                    try:
+                        import os as _mw_os
+                        _env_chat = str(_mw_os.environ.get('HERMES_SESSION_CHAT_ID') or '').strip()
+                        _env_user = str(_mw_os.environ.get('HERMES_SESSION_USER_ID') or '').strip()
+                        _env_platform = str(_mw_os.environ.get('HERMES_SESSION_PLATFORM') or '').strip()
+                        if _env_chat and (_env_platform == 'telegram' or _env_chat.lstrip('-').isdigit()):
+                            _namespace = f"telegram:{_env_chat}"
+                        elif _env_user and (_env_platform == 'telegram' or _env_user.isdigit()):
+                            _namespace = f"telegram:{_env_user}"
+                    except Exception:
+                        _namespace = ""
+                if not _namespace and _user_id and _user_id.isdigit():
+                    _namespace = f"telegram:{_user_id}"
                 if not _namespace:
                     try:
                         from hermes_cli.config import load_config as _mw_load_config

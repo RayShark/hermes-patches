@@ -35,6 +35,8 @@ def load_memory_write_config(config_path: Optional[str] = None) -> Dict[str, Any
             "decision",
             "lesson",
         ],
+        "semantic_classifier": {"model_enabled": False},
+        "repair_queue_path": "~/.hermes/logs/memory_repair_queue.jsonl",
     }
     path = Path(config_path or os.path.expanduser("~/.hermes/memory_write_config.yaml"))
     if not path.exists():
@@ -200,7 +202,7 @@ class MemoryWritePipeline:
         # assistant cannot promote its own apology into a memory.
         meta_learning_patterns = [
             (
-                r'(纠正|错了|不对|又没|太气人|记不住|不会主动存|不会主动召回|防复发|根因|通用(?:的)?(?:解决方案|机制)|目标函数|reject gate|外置大脑|数字替身)',
+                r'(纠正|错了|不对|又没|太气人|记不住|不会主动存|不会主动召回|防复发|根因|通用(?:的)?(?:解决方案|机制)|目标函数|reject gate|外置大脑|数字替身|之前.*聊过|先回忆|先召回|项目目标)',
                 'agent_memory_workflow',
                 'procedural_memory',
                 0.95,
@@ -265,9 +267,9 @@ class MemoryWritePipeline:
                     subject='user', predicate='correction',
                     object_value=m.group(0),
                     importance=0.95, memory_type='user_fact',
-                    target_store='memory_graph', target_path='',
+                    target_store='memory_graph', target_path='用户档案/纠错',
                     evidence_quote=user_msg, confidence=0.95,
-                    source_type='user_correction', reason='User corrected a fact'
+                    source_type='user_correction', requires_review=True, reason='User corrected a fact'
                 ))
 
         # Extract rules
@@ -313,7 +315,7 @@ class MemoryWritePipeline:
                 entity_name = match.group(1)
 
                 # Check for specific fact types
-                if re.search(r'(成绩|分数|考试|mock)', extraction_text):
+                if re.search(r'(成绩|分数|考试|mock)', extraction_text) and re.search(r'(成绩|分数|mock)\s*(?:是|为|=|:|：)?\s*\d+\s*分', extraction_text):
                     score_match = re.search(r'(\d+)\s*分', extraction_text)
                     score_val = score_match.group(1) if score_match else '?'
                     candidates.append(CandidateFact(
@@ -396,7 +398,9 @@ class MemoryWritePipeline:
         # conservative and fail-closed.
         try:
             from agent.memory_semantic_classifier import classify_memory_semantics
-            sem = classify_memory_semantics(user_msg, assistant_msg)
+            sem_cfg = self.config.get('semantic_classifier') or {}
+            model_classifier = sem_cfg.get('model_callable') if sem_cfg.get('model_enabled') else None
+            sem = classify_memory_semantics(user_msg, assistant_msg, model_classifier=model_classifier)
             sem_kind = sem.memory_kind
             if sem_kind not in {'ignore', 'temporary'}:
                 sem_type_map = {
@@ -633,6 +637,36 @@ class MemoryWritePipeline:
             'node_uuid': created.get('node_uuid'),
         }
 
+    def _record_repair_queue(self, candidate: CandidateFact, classification: Dict[str, Any], result: Dict[str, Any]) -> None:
+        """Append a redacted readback-repair item for failed writes/canaries. No Graph mutation."""
+        try:
+            from datetime import datetime, timezone
+            import hashlib
+            path = Path(os.path.expanduser(str(self.config.get('repair_queue_path') or '~/.hermes/logs/memory_repair_queue.jsonl')))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            raw_value = candidate.object_value or ''
+            secret_like = bool(re.search(r'(sk-[A-Za-z0-9]|ghp_[A-Za-z0-9]|github_pat_|xox[baprs]-|AKIA[0-9A-Z]{16}|token\s*[:=]|api[_ -]?key\s*[:=])', raw_value, re.I))
+            item = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'namespace': classification.get('namespace') or candidate.namespace or '',
+                'subject': candidate.subject,
+                'predicate': candidate.predicate,
+                'memory_type': candidate.memory_type,
+                'target_store': classification.get('target_store'),
+                'target_path': classification.get('target_path') or candidate.target_path,
+                'readback_queries': result.get('readback_queries') or generate_readback_queries(candidate),
+                'top_uri': result.get('top_uri', ''),
+                'top_score': result.get('top_score'),
+                'failure_reason': result.get('failure_reason') or result.get('reason') or 'readback not verified',
+                'suggested_repair': 'manual_review' if secret_like or candidate.requires_review else 'alias_or_search_terms',
+                'raw_secret_redacted': secret_like,
+                'value_sha256': hashlib.sha256(raw_value.encode('utf-8', 'ignore')).hexdigest() if raw_value else '',
+            }
+            with path.open('a', encoding='utf-8') as f:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+        except Exception as exc:
+            logger.debug('Failed to record memory repair queue item: %s', exc)
+
     def write_and_verify(self, candidate: CandidateFact, classification: Dict) -> Dict[str, Any]:
         """Write to target store and verify readback."""
         result = {
@@ -655,6 +689,9 @@ class MemoryWritePipeline:
         result['auto_write_allowed'] = self._should_auto_write(candidate, classification)
         if not result['auto_write_allowed']:
             result['reason'] = 'auto-write gate rejected candidate'
+            if candidate.importance >= 0.85 and classification.get('target_store') in {'memory_graph', 'review'}:
+                result['failure_reason'] = result['reason']
+                self._record_repair_queue(candidate, classification, result)
             return result
 
         # Rules that would normally fit MEMORY.md are written to Memory Graph here.
@@ -662,6 +699,8 @@ class MemoryWritePipeline:
         graph_result = self._write_memory_graph(candidate, classification)
         result.update(graph_result)
         result['readback_ok'] = bool(graph_result.get('readback_ok') or graph_result.get('duplicate'))
+        if not result['readback_ok']:
+            self._record_repair_queue(candidate, classification, result)
         return result
 
 # ─── Write Regression Test Suite ──────────────────────────────────

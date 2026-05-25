@@ -185,3 +185,39 @@ def test_extracts_exam_context_for_future_recall():
 
     candidates = reflection["candidates"]
     assert any(c.subject == "exam_context" and c.memory_type == "user_fact" for c in candidates)
+
+
+
+def test_model_semantic_classifier_is_config_gated_shadow_only():
+    def model(_prompt):
+        return {
+            'memory_kind': 'creative_preference',
+            'durability': 'long_term',
+            'confidence': 0.96,
+            'evidence_quote': 'Prefer vivid human prose',
+            'target_store': 'memory_graph',
+            'target_path': 'profile/creative',
+            'requires_review': False,
+            'privacy_scope': 'user_private',
+            'readback_queries': ['future creative prose preference'],
+            'reject_gate': 'Reject generic prose.',
+            'reason': 'explicit preference',
+        }
+    pipeline = MemoryWritePipeline(config={"mode":"shadow", "semantic_classifier":{"model_enabled": True, "model_callable": model}})
+    reflection = pipeline.reflect_and_extract('Any multilingual phrasing should use the model path.', '')
+    assert any(c.subject == 'creative_target_function' for c in reflection['candidates'])
+    c = next(c for c in reflection['candidates'] if c.subject == 'creative_target_function')
+    cls = pipeline.classify_write(c, namespace='telegram:u1')
+    result = pipeline.write_and_verify(c, cls)
+    assert result['auto_write_allowed'] is False
+    assert result['written'] is False
+
+
+def test_model_semantic_classifier_disabled_does_not_call_model():
+    called = {'n': 0}
+    def model(_prompt):
+        called['n'] += 1
+        return {'memory_kind':'user_fact'}
+    pipeline = MemoryWritePipeline(config={"mode":"shadow", "semantic_classifier":{"model_enabled": False, "model_callable": model}})
+    pipeline.reflect_and_extract('哈哈可以', '')
+    assert called['n'] == 0

@@ -53,6 +53,58 @@ def _safe_excerpt(text: str, limit: int = 300) -> str:
     return (text or "").strip().replace("\x00", "")[:limit]
 
 
+def _fail_closed(source_text: str, reason: str = "model classifier failed closed") -> SemanticMemoryClassification:
+    """Return a non-writing review candidate when model classification is unavailable/invalid.
+
+    When an operator explicitly enables a model-backed classifier, invalid JSON or
+    tool failure must not fall back to local heuristics that might write. The safe
+    state is shadow/review with no automatic Graph mutation.
+    """
+    return SemanticMemoryClassification(
+        memory_kind="ignore",
+        durability="none",
+        confidence=0.0,
+        evidence_quote=_safe_excerpt(source_text, 400),
+        target_store="review",
+        target_path="",
+        requires_review=True,
+        privacy_scope="review",
+        readback_queries=[],
+        reject_gate="",
+        reason=reason,
+    )
+
+
+def build_model_classifier_prompt(user_message: str, assistant_message: str = "") -> str:
+    """Build a generic JSON-only classifier prompt. No deployment-local names/paths."""
+    return json.dumps({
+        "task": "Classify whether the user's message contains a durable memory candidate. Return JSON only.",
+        "schema": {
+            "memory_kind": sorted(MEMORY_KINDS),
+            "durability": "none|minutes|session|until_superseded|long_term",
+            "confidence": "0.0-1.0",
+            "evidence_quote": "short quote from user text only",
+            "target_store": sorted(TARGET_STORES),
+            "target_path": "generic caller-chosen path; no raw secrets",
+            "requires_review": "boolean",
+            "privacy_scope": sorted(PRIVACY_SCOPES),
+            "readback_queries": "future phrasing queries for top-result verification",
+            "reject_gate": "procedural guard if the event is a correction",
+            "reason": "short explanation",
+        },
+        "rules": [
+            "Do not store raw secrets; credential_route stores only lookup route/procedure.",
+            "Inferred preferences require review.",
+            "User corrections may produce procedural_rule/correction_learning_event and reject_gate.",
+            "Temporary mood/state and acknowledgements should be ignore/temporary.",
+            "Generate future-phrased readback_queries for retrievability.",
+            "If uncertain, target_store=review and requires_review=true.",
+        ],
+        "user_message": _safe_excerpt(user_message, 1200),
+        "assistant_message": _safe_excerpt(assistant_message, 800),
+    }, ensure_ascii=False)
+
+
 def _queries(subject: str, text: str, kind: str) -> List[str]:
     body = _safe_excerpt(text, 120)
     candidates = [f"{subject} {kind}", body]
@@ -88,7 +140,15 @@ def _fallback_classify(user_message: str, assistant_message: str = "") -> Semant
     if re.search(r"^(哈哈|嗯|好的|可以|ok|OK|行|好)$", text.strip()):
         return SemanticMemoryClassification("ignore", "none", 0.95, text, "ignore", "", False, "review", [], reason="low-information acknowledgement")
 
-    if re.search(r"(纠正|错了|错错错|不对|不是|又没|太气人|防复发|根因|通用.*解决|reject gate|数字替身|外置大脑|有必要吗)", text, re.I):
+    if re.search(r"(claude code|claude|codex|github|token|pat|api key|凭据|not logged in|登录|auth)", lower, re.I):
+        return SemanticMemoryClassification(
+            "credential_route", "long_term", 0.86, text, "memory_graph", "用户档案/工具凭据查找规则",
+            True, "sensitive", _queries("tool_credential_route", text, "credential_route"),
+            "Never print raw secrets; search memory/session/config/secret paths before saying credentials are missing.",
+            "tool/auth mention requires safe credential-route memory",
+        )
+
+    if re.search(r"(纠正|错了|错错错|不对|不是|又没|太气人|防复发|根因|通用.*解决|reject gate|数字替身|外置大脑|有必要吗|之前.*聊过|先回忆|先召回|项目目标)", text, re.I):
         return SemanticMemoryClassification(
             "correction_learning_event", "long_term", 0.88, text, "memory_graph", "用户档案/程序性记忆",
             True, "user_private", _queries("agent_memory_workflow", text, "correction_learning_event"),
@@ -106,14 +166,6 @@ def _fallback_classify(user_message: str, assistant_message: str = "") -> Semant
 
     if re.search(r"(我现在|现在).{0,8}(困|累|饿|睡)", text):
         return SemanticMemoryClassification("temporary", "minutes", 0.9, text, "ignore", "", False, "review", [], reason="temporary state")
-
-    if re.search(r"(claude code|claude|codex|github|token|pat|api key|凭据|not logged in|登录|auth)", lower, re.I):
-        return SemanticMemoryClassification(
-            "credential_route", "long_term", 0.86, text, "memory_graph", "用户档案/工具凭据查找规则",
-            True, "sensitive", _queries("tool_credential_route", text, "credential_route"),
-            "Never print raw secrets; search memory/session/config/secret paths before saying credentials are missing.",
-            "tool/auth mention requires safe credential-route memory",
-        )
 
     if re.search(r"(考试|时间表|范围|复习|mock|dse|下周|明天).{0,80}(考试|时间表|范围|复习|科目|dse|mock)", text, re.I):
         return SemanticMemoryClassification(
@@ -180,21 +232,7 @@ def classify_memory_semantics(user_message: str, assistant_message: str = "", mo
     source = _safe_excerpt(user_message, 1200)
     if model_classifier is None:
         return _fallback_classify(user_message, assistant_message)
-    schema_prompt = json.dumps({
-        "task": "Classify whether the user's message contains a durable memory candidate. Return JSON only.",
-        "allowed_memory_kind": sorted(MEMORY_KINDS),
-        "allowed_target_store": sorted(TARGET_STORES),
-        "allowed_privacy_scope": sorted(PRIVACY_SCOPES),
-        "rules": [
-            "Do not store raw secrets; credential_route stores only lookup route/procedure.",
-            "Inferred preferences require review.",
-            "User corrections may produce procedural_rule/correction_learning_event and reject_gate.",
-            "Temporary mood/state and acknowledgements should be ignore/temporary.",
-            "Generate future-phrased readback_queries for retrievability.",
-        ],
-        "user_message": source,
-        "assistant_message": _safe_excerpt(assistant_message, 800),
-    }, ensure_ascii=False)
+    schema_prompt = build_model_classifier_prompt(user_message, assistant_message)
     try:
         raw = model_classifier(schema_prompt)
         if isinstance(raw, str):
@@ -202,8 +240,8 @@ def classify_memory_semantics(user_message: str, assistant_message: str = "", mo
         if not isinstance(raw, Mapping):
             raise ValueError("classifier did not return object")
         return _validate(raw, source)
-    except Exception:
-        return _fallback_classify(user_message, assistant_message)
+    except Exception as exc:
+        return _fail_closed(source, f"model classifier failed closed: {exc.__class__.__name__}")
 
 
-__all__ = ["SemanticMemoryClassification", "classify_memory_semantics", "MEMORY_KINDS"]
+__all__ = ["SemanticMemoryClassification", "classify_memory_semantics", "build_model_classifier_prompt", "MEMORY_KINDS"]
