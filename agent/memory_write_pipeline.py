@@ -388,7 +388,55 @@ class MemoryWritePipeline:
                     source_type='user_direct'
                 ))
 
-        # Deduplicate overlapping regex hits while preserving order. This prevents
+        # Semantic classifier overlay. This runs after legacy extractors so old
+        # regression tests keep their first concrete fact, but high-level durable
+        # signals (creative target functions, credential routes, exam contexts,
+        # user correction learning events) are not missed when no narrow entity
+        # extractor fired. It is shadow-safe because write policy remains
+        # conservative and fail-closed.
+        try:
+            from agent.memory_semantic_classifier import classify_memory_semantics
+            sem = classify_memory_semantics(user_msg, assistant_msg)
+            sem_kind = sem.memory_kind
+            if sem_kind not in {'ignore', 'temporary'}:
+                sem_type_map = {
+                    'creative_preference': 'target_function',
+                    'target_function': 'target_function',
+                    'credential_route': 'procedural_memory',
+                    'exam_context': 'user_fact',
+                    'correction_learning_event': 'procedural_memory',
+                    'procedural_rule': 'rule',
+                    'user_fact': 'preference' if '偏好' in sem.target_path else 'user_fact',
+                    'project_fact': 'project_fact',
+                }
+                sem_subject_map = {
+                    'creative_preference': 'creative_target_function',
+                    'target_function': 'target_function',
+                    'credential_route': 'tool_credential_route',
+                    'exam_context': 'exam_context',
+                    'correction_learning_event': 'agent_memory_workflow',
+                    'procedural_rule': 'procedural_rule',
+                }
+                sem_memory_type = sem_type_map.get(sem_kind, 'lesson')
+                sem_requires_review = bool(sem.requires_review)
+                candidates.append(CandidateFact(
+                    subject=sem_subject_map.get(sem_kind, sem_kind),
+                    predicate='semantic_signal',
+                    object_value=sem.evidence_quote[:500],
+                    importance=max(0.40, min(1.0, sem.confidence)),
+                    memory_type=sem_memory_type,
+                    target_store=sem.target_store,
+                    target_path=sem.target_path,
+                    evidence_quote=sem.evidence_quote[:500],
+                    confidence=max(0.40, min(1.0, sem.confidence)),
+                    source_type='user_correction' if sem_kind == 'correction_learning_event' else 'user_direct',
+                    requires_review=sem_requires_review,
+                    reason=sem.reason or sem.reject_gate,
+                ))
+        except Exception as exc:
+            logger.debug('Semantic memory classifier failed closed: %s', exc)
+
+        # Deduplicate overlapping regex/semantic hits while preserving order. This prevents
         # one correction such as "不是85，是83" from generating duplicate write
         # candidates via multiple correction patterns.
         deduped = []
@@ -548,6 +596,8 @@ class MemoryWritePipeline:
 
         readback = []
         readback_ok = False
+        top_uri = ''
+        top_score = None
         for query in generate_readback_queries(candidate):
             search_raw = memory_graph_tool._search({
                 'query': query,
@@ -564,13 +614,21 @@ class MemoryWritePipeline:
                 for row in rows
             ):
                 readback_ok = True
+                top = rows[0] if rows else {}
+                top_uri = top.get('uri', '')
+                top_score = top.get('score')
                 break
+
+        failure_reason = '' if readback_ok else 'created memory was not found in top search results for generated future queries'
 
         return {
             'written': True,
             'duplicate': False,
             'readback_ok': readback_ok,
             'readback': readback,
+            'top_uri': top_uri,
+            'top_score': top_score,
+            'failure_reason': failure_reason,
             'uri': created.get('uri') or f"core://{created.get('path', '')}",
             'node_uuid': created.get('node_uuid'),
         }
@@ -585,6 +643,9 @@ class MemoryWritePipeline:
             'auto_write_allowed': False,
             'readback_ok': False,
             'readback_queries': [],
+            'top_uri': '',
+            'top_score': None,
+            'failure_reason': '',
         }
 
         if classification.get('action') != 'write':

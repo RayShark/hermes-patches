@@ -73,7 +73,7 @@ if [ -s "$PATCH_FILE" ]; then
 fi
 
 # 2. Copy agent modules / patched core files
-for module in memory_metacognition.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py request_context.py agent_init.py agent_runtime_helpers.py conversation_loop.py memory_provider.py tool_executor.py image_gen_provider.py; do
+for module in memory_metacognition.py memory_semantic_classifier.py memory_write_pipeline.py shadow_write_logger.py hindsight_access_tracker.py hindsight_reranker.py request_context.py agent_init.py agent_runtime_helpers.py conversation_loop.py memory_provider.py tool_executor.py image_gen_provider.py; do
     if [ -f "$PATCHES_DIR/agent/$module" ]; then
         cp "$PATCHES_DIR/agent/$module" "$HERMES_DIR/agent/"
         echo "   ✅ agent/$module 已复制"
@@ -221,6 +221,7 @@ fi
 
 # 6. Clean .pyc caches
 find "$HERMES_DIR/agent" -name "memory_metacognition*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "memory_semantic_classifier*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "memory_write_pipeline*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "shadow_write_logger*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "hindsight_access_tracker*.pyc" -delete 2>/dev/null
@@ -245,6 +246,12 @@ if [ -f "$PATCHES_DIR/scripts/hermes-patch-chain-guard.sh" ]; then
     cp "$PATCHES_DIR/scripts/hermes-patch-chain-guard.sh" "$HOME/.hermes/scripts/hermes-patch-chain-guard.sh"
     chmod +x "$HOME/.hermes/scripts/hermes-patch-chain-guard.sh"
     echo "   ✅ hermes-patch-chain-guard.sh 已安装"
+fi
+if [ -f "$PATCHES_DIR/scripts/memory_os_shadow_namespace_watchdog.py" ]; then
+    mkdir -p "$HOME/.hermes/scripts"
+    cp "$PATCHES_DIR/scripts/memory_os_shadow_namespace_watchdog.py" "$HOME/.hermes/scripts/memory_os_shadow_namespace_watchdog.py"
+    chmod +x "$HOME/.hermes/scripts/memory_os_shadow_namespace_watchdog.py"
+    echo "   ✅ memory_os_shadow_namespace_watchdog.py 已安装"
 fi
 if [ -f "$PATCHES_DIR/scripts/hermes-ast-grep-audit.sh" ]; then
     mkdir -p "$HOME/.hermes/scripts"

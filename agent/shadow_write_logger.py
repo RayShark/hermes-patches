@@ -53,6 +53,10 @@ def log_shadow_write(
             "actually_written": c.get("actually_written", False),
             "readback_ok": c.get("readback_ok", False),
             "uri": c.get("uri", ""),
+            "top_uri": c.get("top_uri", ""),
+            "top_score": c.get("top_score"),
+            "failure_reason": c.get("failure_reason", ""),
+            "readback_queries": c.get("readback_queries", []),
             "write_error": c.get("write_error", ""),
         }
         entry["candidate_writes"].append(write_action)

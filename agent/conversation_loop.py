@@ -4214,6 +4214,10 @@ def run_conversation(
                         "auto_write_allowed": _write_result.get("auto_write_allowed", False),
                         "actually_written": _write_result.get("written", False),
                         "readback_ok": _write_result.get("readback_ok", False),
+                        "readback_queries": _write_result.get("readback_queries", []),
+                        "top_uri": _write_result.get("top_uri", ""),
+                        "top_score": _write_result.get("top_score"),
+                        "failure_reason": _write_result.get("failure_reason", ""),
                         "uri": _write_result.get("uri", ""),
                         "write_error": _write_result.get("error", ""),
                     })
