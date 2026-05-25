@@ -197,7 +197,30 @@ GRANT CONNECT ON DATABASE hindsight TO mg_app;
 GRANT USAGE ON SCHEMA public TO mg_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mg_nodes, mg_memories, mg_edges, mg_paths, mg_glossary_keywords, mg_search_documents, mg_access_log, mg_snapshots, mg_access_logs TO mg_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO mg_app;
-ALTER TABLE mg_edges DISABLE ROW LEVEL SECURITY;
+ALTER TABLE mg_edges ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS mg_edges_isolation ON mg_edges;
+CREATE POLICY mg_edges_isolation ON mg_edges
+    FOR ALL
+    USING (
+        current_setting('app.is_admin', true) = 'true'
+        OR parent_uuid = '00000000-0000-0000-0000-000000000000'
+        OR parent_uuid IN (
+            SELECT node_uuid FROM mg_paths
+            WHERE namespace = current_setting('app.current_namespace', true)
+               OR namespace = ''
+               OR namespace IS NULL
+        )
+    )
+    WITH CHECK (
+        current_setting('app.is_admin', true) = 'true'
+        OR parent_uuid = '00000000-0000-0000-0000-000000000000'
+        OR parent_uuid IN (
+            SELECT node_uuid FROM mg_paths
+            WHERE namespace = current_setting('app.current_namespace', true)
+               OR namespace = ''
+               OR namespace IS NULL
+        )
+    );
 SQL
         echo "   ✅ mg_app least-privileged DB role 已确认"
     fi
