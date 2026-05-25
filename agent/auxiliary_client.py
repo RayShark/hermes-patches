@@ -3294,7 +3294,9 @@ def resolve_provider_client(
             _clean_base, _dq = _extract_url_query_params(custom_base)
             if _dq:
                 extra["default_query"] = _dq
-            if base_url_host_matches(custom_base, "api.kimi.com"):
+            if base_url_host_matches(custom_base, "gw2.oops.asia"):
+                extra["default_headers"] = {"User-Agent": "curl/8.0"}
+            elif base_url_host_matches(custom_base, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
                 from hermes_cli.copilot_auth import copilot_request_headers
