@@ -3049,7 +3049,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay", "anthropic_beta",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body",
+        "discover_models", "extra_body", "default_headers", "headers",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -3147,6 +3147,14 @@ def _normalize_custom_provider_entry(
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
+
+    default_headers = entry.get("default_headers") or entry.get("headers")
+    if isinstance(default_headers, dict):
+        normalized["default_headers"] = {
+            str(k): str(v)
+            for k, v in default_headers.items()
+            if str(k).strip() and v is not None
+        }
 
     anthropic_beta = entry.get("anthropic_beta")
     if isinstance(anthropic_beta, str) and anthropic_beta.strip():

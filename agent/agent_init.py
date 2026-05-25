@@ -764,6 +764,11 @@ def init_agent(
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
             effective_base = base_url
+            from agent.auxiliary_client import custom_provider_default_headers, merge_default_headers
+            merge_default_headers(
+                client_kwargs,
+                custom_provider_default_headers(agent.provider, effective_base),
+            )
             if base_url_host_matches(effective_base, "openrouter.ai"):
                 from agent.auxiliary_client import build_or_headers
                 client_kwargs["default_headers"] = build_or_headers()
@@ -776,10 +781,6 @@ def init_agent(
                 from hermes_cli.models import copilot_default_headers
 
                 client_kwargs["default_headers"] = copilot_default_headers()
-            elif base_url_host_matches(effective_base, "gw2.oops.asia"):
-                client_kwargs["default_headers"] = {
-                    "User-Agent": "curl/8.0",
-                }
             elif base_url_host_matches(effective_base, "api.kimi.com"):
                 client_kwargs["default_headers"] = {
                     "User-Agent": "claude-code/0.1.0",

@@ -125,6 +125,68 @@ def _extract_url_query_params(url: str):
     return url, None
 
 
+
+def merge_default_headers(target_kwargs: dict, headers: Optional[Dict[str, str]]) -> None:
+    """Merge client-level default headers into OpenAI SDK kwargs.
+
+    This is intentionally tiny and shared by main-agent and auxiliary-client
+    construction paths. Later provider-specific headers can override earlier
+    config-declared headers by calling this helper again.
+    """
+    if not headers:
+        return
+    clean = {str(k): str(v) for k, v in dict(headers).items() if str(k).strip() and v is not None}
+    if not clean:
+        return
+    existing = target_kwargs.get("default_headers")
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    merged.update(clean)
+    target_kwargs["default_headers"] = merged
+
+
+def custom_provider_default_headers(
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    custom_entry: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Return config-declared default_headers for a custom provider.
+
+    Custom provider quirks belong in config metadata, not scattered host-name
+    branches. Matching is intentionally data-driven:
+    - direct custom_entry wins when the caller already resolved a named provider;
+    - otherwise match by provider name (`custom:Name`, `Name`, normalized id);
+    - otherwise match by base_url host so explicit base_url/fallback routes also
+      inherit the same headers.
+    """
+    entries = []
+    if isinstance(custom_entry, dict):
+        entries.append(custom_entry)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        entries.extend(e for e in (cfg.get("custom_providers") or []) if isinstance(e, dict))
+    except Exception:
+        pass
+
+    provider_norm = (provider or "").strip().lower()
+    provider_suffix = provider_norm.split(":", 1)[1] if provider_norm.startswith("custom:") else provider_norm
+    target_host = base_url_hostname(str(base_url or "")) if base_url else ""
+
+    for entry in entries:
+        headers = entry.get("default_headers") or entry.get("headers") or {}
+        if not isinstance(headers, dict) or not headers:
+            continue
+        name = str(entry.get("name") or "").strip().lower()
+        aliases = [str(a).strip().lower() for a in (entry.get("aliases") or []) if str(a).strip()]
+        names = {name, f"custom:{name}", *aliases, *(f"custom:{a}" for a in aliases)}
+        entry_host = base_url_hostname(str(entry.get("base_url") or ""))
+        if provider_norm and (provider_norm in names or provider_suffix in names):
+            return {str(k): str(v) for k, v in headers.items() if str(k).strip() and v is not None}
+        if target_host and entry_host and target_host == entry_host:
+            return {str(k): str(v) for k, v in headers.items() if str(k).strip() and v is not None}
+    return {}
+
+
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
@@ -1436,10 +1498,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 if is_native_gemini_base_url(base_url):
                     return GeminiNativeClient(api_key=api_key, base_url=base_url), model
             extra = {}
-            if base_url_host_matches(base_url, "gw2.oops.asia"):
-                extra["default_headers"] = {"User-Agent": "curl/8.0"}
-            elif base_url_host_matches(base_url, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            merge_default_headers(extra, custom_provider_default_headers(provider_id, base_url))
+            if base_url_host_matches(base_url, "api.kimi.com"):
+                merge_default_headers(extra, {"User-Agent": "claude-code/0.1.0"})
             elif base_url_host_matches(base_url, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
 
@@ -1475,22 +1536,21 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if is_native_gemini_base_url(base_url):
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         extra = {}
-        if base_url_host_matches(base_url, "gw2.oops.asia"):
-            extra["default_headers"] = {"User-Agent": "curl/8.0"}
-        elif base_url_host_matches(base_url, "api.kimi.com"):
-            extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+        merge_default_headers(extra, custom_provider_default_headers(provider_id, base_url))
+        if base_url_host_matches(base_url, "api.kimi.com"):
+            merge_default_headers(extra, {"User-Agent": "claude-code/0.1.0"})
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 
-            extra["default_headers"] = copilot_default_headers()
+            merge_default_headers(extra, copilot_default_headers())
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
-            extra["default_headers"] = build_nvidia_nim_headers(base_url)
+            merge_default_headers(extra, build_nvidia_nim_headers(base_url))
         else:
             try:
                 from providers import get_provider_profile as _gpf_aux2
                 _ph_aux2 = _gpf_aux2(provider_id)
                 if _ph_aux2 and _ph_aux2.default_headers:
-                    extra["default_headers"] = dict(_ph_aux2.default_headers)
+                    merge_default_headers(extra, _ph_aux2.default_headers)
             except Exception:
                 pass
         _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
@@ -3294,10 +3354,9 @@ def resolve_provider_client(
             _clean_base, _dq = _extract_url_query_params(custom_base)
             if _dq:
                 extra["default_query"] = _dq
-            if base_url_host_matches(custom_base, "gw2.oops.asia"):
-                extra["default_headers"] = {"User-Agent": "curl/8.0"}
-            elif base_url_host_matches(custom_base, "api.kimi.com"):
-                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            merge_default_headers(extra, custom_provider_default_headers(provider, custom_base))
+            if base_url_host_matches(custom_base, "api.kimi.com"):
+                merge_default_headers(extra, {"User-Agent": "claude-code/0.1.0"})
             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
                 from hermes_cli.copilot_auth import copilot_request_headers
                 extra["default_headers"] = copilot_request_headers(
@@ -3391,8 +3450,10 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
-                if base_url_host_matches(openai_base, "gw2.oops.asia"):
-                    _extra2["default_headers"] = {"User-Agent": "curl/8.0"}
+                merge_default_headers(
+                    _extra2,
+                    custom_provider_default_headers(provider, openai_base, custom_entry),
+                )
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -3415,6 +3476,10 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        merge_default_headers(
+                            _fb_extra,
+                            custom_provider_default_headers(provider, _fallback_base, custom_entry),
+                        )
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
@@ -3542,6 +3607,7 @@ def resolve_provider_client(
 
         # Provider-specific headers
         headers = {}
+        headers.update(custom_provider_default_headers(provider, base_url))
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers["User-Agent"] = "claude-code/0.1.0"
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
