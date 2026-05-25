@@ -448,6 +448,7 @@ def run_conversation(
     # work, Hermes self-maintenance, Memory OS/patch work, and user-reported
     # skill-routing misses must not rely on the model remembering to call
     # skill_view() after it has already started answering.
+    _skill_route_decision = None
     try:
         from agent.skill_router import (
             build_autoload_skill_messages,
@@ -458,6 +459,10 @@ def run_conversation(
             str(user_message or ""),
             task_id=effective_task_id,
         )
+        try:
+            agent._skill_route_decision = _skill_route_decision
+        except Exception:
+            pass
         log_skill_route_decision(
             _skill_route_decision,
             user_message=str(user_message or ""),
@@ -3857,6 +3862,34 @@ def run_conversation(
                     length_continue_retries = 0
 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                try:
+                    from agent.skill_router import (
+                        build_completion_gate_continue_message,
+                        completion_gate_should_continue,
+                    )
+                    _gate_continue, _gate_reason = completion_gate_should_continue(
+                        final_response,
+                        _skill_route_decision,
+                        messages,
+                    )
+                except Exception as _skill_gate_err:
+                    logger.debug("Skill router completion gate check failed: %s", _skill_gate_err)
+                    _gate_continue, _gate_reason = False, "gate_error"
+                if _gate_continue:
+                    logger.info(
+                        "Skill router CompletionGate blocked final response: reason=%s session=%s",
+                        _gate_reason,
+                        getattr(agent, "session_id", None) or "none",
+                    )
+                    agent._emit_status(
+                        f"↻ Skill router CompletionGate blocked premature final ({_gate_reason}); continuing"
+                    )
+                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                    messages.append(interim_msg)
+                    messages.append(build_completion_gate_continue_message(_gate_reason, _skill_route_decision))
+                    agent._session_messages = messages
+                    continue
 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

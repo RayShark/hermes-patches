@@ -72,6 +72,37 @@ def test_necessary_as_overengineering_correction():
     assert r['requires_review'] is True
 
 
+def test_short_continuation_routes_to_active_workstream_review():
+    r = kind('继续')
+    assert r['memory_kind'] == 'active_workstream_context'
+    assert r['target_store'] == 'review'
+    assert r['requires_review'] is True
+    assert any('continue' in q.lower() or '继续' in q for q in r['readback_queries'])
+
+
+def test_project_identity_question_requires_inventory_verification():
+    r = kind('这是我的 AI 项目吗？')
+    assert r['memory_kind'] == 'project_identity_verification'
+    assert r['target_store'] == 'review'
+    assert r['requires_review'] is True
+    assert any('project' in q.lower() or '项目' in q for q in r['readback_queries'])
+
+
+def test_explicit_memory_request_requires_readback_review():
+    r = kind('把这个长期记住：以后遇到同类问题要先做 readback 验证。')
+    assert r['memory_kind'] == 'explicit_memory_request'
+    assert r['target_store'] == 'review'
+    assert r['requires_review'] is True
+    assert any('readback' in q.lower() or '长期记住' in q for q in r['readback_queries'])
+
+
+def test_creative_preference_accepts_bie_negative_marker():
+    r = kind('继续写低频心跳，别有 AI 味。')
+    assert r['memory_kind'] == 'creative_preference'
+    assert r['target_store'] == 'memory_graph'
+    assert r['requires_review'] is False
+
+
 def test_model_json_path_validates_and_fail_closed():
     def model(_prompt):
         return '{"memory_kind":"user_fact","durability":"long_term","confidence":0.92,"evidence_quote":"Prefer concise","target_store":"memory_graph","target_path":"用户档案/偏好","requires_review":false,"privacy_scope":"user_private","readback_queries":["user concise preference"],"reject_gate":"","reason":"explicit preference"}'

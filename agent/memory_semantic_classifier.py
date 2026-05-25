@@ -140,6 +140,30 @@ def _fallback_classify(user_message: str, assistant_message: str = "") -> Semant
     if re.search(r"^(哈哈|嗯|好的|可以|ok|OK|行|好)$", text.strip()):
         return SemanticMemoryClassification("ignore", "none", 0.95, text, "ignore", "", False, "review", [], reason="low-information acknowledgement")
 
+    if re.search(r"^(继续|continue)$", text.strip(), re.I):
+        return SemanticMemoryClassification(
+            "active_workstream_context", "session", 0.82, text, "review", "用户档案/程序性记忆",
+            True, "user_private", _queries("active_workstream_context", text, "active_workstream_context"),
+            "Before answering a bare continuation, recover the active workstream and execute the next safe step instead of asking the user to repeat context.",
+            "bare continuation should route through active-context recall",
+        )
+
+    if re.search(r"(这是|这个).{0,20}(我的|用户的).{0,10}(ai|AI|项目|project).{0,10}(项目|吗|么|是不是)", text):
+        return SemanticMemoryClassification(
+            "project_identity_verification", "long_term", 0.82, text, "review", "用户档案/程序性记忆",
+            True, "user_private", _queries("project_identity_verification", text, "project_identity_verification"),
+            "Before deciding whether something is the user's AI project, inspect project inventory and candidate project nodes instead of inferring from nearby context.",
+            "project identity questions require explicit inventory verification",
+        )
+
+    if re.search(r"(长期记住|把这个.*记住|记住这个|remember this|save this|以后遇到同类)", text, re.I):
+        return SemanticMemoryClassification(
+            "explicit_memory_request", "long_term", 0.86, text, "review", "用户档案/程序性记忆",
+            True, "user_private", _queries("explicit_memory_request", text, "explicit_memory_request"),
+            "Explicit memory requests must be routed to the correct durable store and verified with readback before assuming they are learned.",
+            "user explicitly requested durable memory/readback behavior",
+        )
+
     if re.search(r"(claude code|claude|codex|github|token|pat|api key|凭据|not logged in|登录|auth)", lower, re.I):
         return SemanticMemoryClassification(
             "credential_route", "long_term", 0.86, text, "memory_graph", "用户档案/工具凭据查找规则",
@@ -175,7 +199,7 @@ def _fallback_classify(user_message: str, assistant_message: str = "") -> Semant
             "exam planning context is durable for future schedules",
         )
 
-    if re.search(r"(小说|写作|低频心跳|漫画|审美|ai味|ai 味|文学|角色|叙事|风格)", text, re.I) and re.search(r"(应该|不要|避免|偏好|喜欢|标准|质感|目标|感觉|不像)", text):
+    if re.search(r"(小说|写作|低频心跳|漫画|审美|ai味|ai 味|文学|角色|叙事|风格)", text, re.I) and re.search(r"(应该|不要|别|避免|偏好|喜欢|标准|质感|目标|感觉|不像)", text):
         return SemanticMemoryClassification(
             "creative_preference", "long_term", 0.84, text, "memory_graph", "用户档案/目标函数/创作审美",
             False, "user_private", _queries("creative_target_function", text, "creative_preference"),

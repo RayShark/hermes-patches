@@ -1,13 +1,19 @@
 import json
-from pathlib import Path
 
 from agent.skill_router import (
     SkillManifest,
     build_autoload_skill_messages,
+    build_completion_gate_continue_message,
+    completion_gate_should_continue,
+    count_substantive_tool_turns,
     classify_task,
     load_skill_manifests,
     maybe_log_routing_failure,
+    model_rerank_skill_candidates,
     route_skills,
+    routing_failures_to_eval_cases,
+    runtime_reroute_guidance_for_tool_result,
+    skill_gate_for_tool,
 )
 
 
@@ -166,3 +172,123 @@ def test_autoload_builds_skill_messages_without_model_decision(monkeypatch):
     assert "Completion Gate" in messages[-1]["content"]
     assert "deep-work" in decision.loaded_skills
     assert "hermes-agent" in decision.loaded_skills
+
+
+def test_completion_gate_blocks_plan_only_long_horizon_final():
+    decision = route_skills("我睡觉了，你自己推进到能 merge。", AVAILABLE)
+    should_continue, reason = completion_gate_should_continue(
+        "计划如下：我会先检查代码，然后运行测试。如果你愿意我可以继续。",
+        decision,
+        messages=[],
+    )
+
+    assert should_continue is True
+    assert reason == "long_horizon_no_substantive_tools"
+    msg = build_completion_gate_continue_message(reason, decision)
+    assert msg["role"] == "user"
+    assert "Do not ask whether to continue" in msg["content"]
+
+
+def test_completion_gate_allows_after_substantive_tool_evidence():
+    decision = route_skills("我睡觉了，你自己推进到能 merge。", AVAILABLE)
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"function": {"name": "terminal", "arguments": "{}"}, "id": "1"}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "1", "content": "pytest passed"},
+    ]
+    assert count_substantive_tool_turns(messages) == 1
+    should_continue, reason = completion_gate_should_continue(
+        "已修复并运行 pytest，通过。",
+        decision,
+        messages=messages,
+    )
+
+    assert should_continue is False
+    assert reason == "pass"
+
+
+def test_tool_gate_blocks_missing_mandatory_loaded_skill():
+    decision = route_skills("你花一晚上彻底修复 Hermes Agent skills，不准停。", AVAILABLE)
+    decision.loaded_skills = ["deep-work"]
+
+    allowed, reason = skill_gate_for_tool("terminal", decision)
+
+    assert allowed is False
+    assert "mandatory_skills_not_loaded" in reason
+
+
+def test_runtime_reroute_guidance_is_added_for_failed_long_horizon_tool():
+    decision = route_skills("你花一晚上把 failing tests 修到能 merge，不准停。", AVAILABLE)
+    decision.loaded_skills = list(decision.mandatory_skills)
+
+    hint = runtime_reroute_guidance_for_tool_result(
+        "terminal",
+        "pytest failed",
+        decision,
+        failed=True,
+    )
+
+    assert "Runtime Re-Route" in hint
+    assert "repair the root cause" in hint
+    assert "do not final" in hint
+
+
+def test_model_rerank_hook_accepts_structured_classifier_output():
+    manifests = {
+        "deep-work": SkillManifest(name="deep-work", description="Long horizon work"),
+        "hermes-agent": SkillManifest(name="hermes-agent", description="Hermes maintenance"),
+    }
+
+    def classifier(prompt):
+        data = json.loads(prompt)
+        assert data["task"] == "semantic_skill_rerank"
+        return json.dumps({
+            "selected_skills": ["deep-work", "hermes-agent"],
+            "mandatory_skills": ["deep-work"],
+            "rejected_skills": {},
+            "confidence": 0.91,
+        })
+
+    result = model_rerank_skill_candidates(
+        "please work overnight until verified",
+        ["deep-work", "hermes-agent"],
+        manifests,
+        classifier=classifier,
+    )
+
+    assert result["fallback_used"] is False
+    assert result["mandatory_skills"] == ["deep-work"]
+    assert result["confidence"] == 0.91
+
+
+def test_model_rerank_fails_closed_to_existing_candidates():
+    result = model_rerank_skill_candidates(
+        "please work overnight until verified",
+        ["deep-work", "hermes-agent"],
+        classifier=lambda _prompt: (_ for _ in ()).throw(RuntimeError("model down")),
+    )
+
+    assert result["fallback_used"] is True
+    assert result["selected_skills"] == ["deep-work", "hermes-agent"]
+    assert result["mandatory_skills"] == []
+
+
+def test_routing_failures_can_be_converted_to_eval_cases(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    decision = route_skills("你刚才应该加载 deep-work skill，为什么又没用 skill？", AVAILABLE)
+    maybe_log_routing_failure(decision, user_message="你刚才应该加载 deep-work skill", session_id="s1")
+
+    out = routing_failures_to_eval_cases()
+    assert out.exists()
+    lines = out.read_text(encoding="utf-8").strip().splitlines()
+    assert lines
+    case = json.loads(lines[-1])
+    rendered = json.dumps(case, ensure_ascii=False)
+    assert "你刚才" not in rendered
+    assert "deep-work skill" not in rendered
+    assert "user_message_sha256_16" in rendered
+    assert "expected_skills_selected_or_loaded" in case["assertions"]

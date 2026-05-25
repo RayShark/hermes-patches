@@ -125,6 +125,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         block_result = None
         blocked_by_guardrail = False
         try:
+            from agent.skill_router import skill_gate_for_tool
+            _allowed_by_skill_gate, _skill_gate_reason = skill_gate_for_tool(
+                function_name,
+                getattr(agent, "_skill_route_decision", None),
+            )
+        except Exception:
+            _allowed_by_skill_gate, _skill_gate_reason = True, "skill_gate_error"
+        if not _allowed_by_skill_gate:
+            block_result = json.dumps({
+                "error": "Hermes Skill Router blocked tool execution before mandatory skills were loaded",
+                "reason": _skill_gate_reason,
+                "tool": function_name,
+                "next_action": "Load the missing mandatory skill(s) or reroute before retrying this tool call.",
+            }, ensure_ascii=False)
+            blocked_by_guardrail = True
+        try:
             from hermes_cli.plugins import get_pre_tool_call_block_message
             block_message = get_pre_tool_call_block_message(
                 function_name, function_args, task_id=effective_task_id or "",
@@ -132,7 +148,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             block_message = None
 
-        if block_message is not None:
+        if block_result is not None:
+            pass
+        elif block_message is not None:
             block_result = json.dumps({"error": block_message}, ensure_ascii=False)
         else:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
@@ -368,6 +386,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
 
             if is_error:
+                try:
+                    from agent.skill_router import runtime_reroute_guidance_for_tool_result
+                    _reroute_hint = runtime_reroute_guidance_for_tool_result(
+                        function_name,
+                        function_result,
+                        getattr(agent, "_skill_route_decision", None),
+                        failed=True,
+                    )
+                    if _reroute_hint and isinstance(function_result, str):
+                        function_result += _reroute_hint
+                except Exception:
+                    pass
                 _err_text = _multimodal_text_summary(function_result)
                 result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
@@ -498,6 +528,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
+        _skill_gate_msg: Optional[str] = None
+        try:
+            from agent.skill_router import skill_gate_for_tool
+            _allowed_by_skill_gate, _skill_gate_reason = skill_gate_for_tool(
+                function_name,
+                getattr(agent, "_skill_route_decision", None),
+            )
+        except Exception:
+            _allowed_by_skill_gate, _skill_gate_reason = True, "skill_gate_error"
+        if not _allowed_by_skill_gate:
+            _skill_gate_msg = json.dumps({
+                "error": "Hermes Skill Router blocked tool execution before mandatory skills were loaded",
+                "reason": _skill_gate_reason,
+                "tool": function_name,
+                "next_action": "Load the missing mandatory skill(s) or reroute before retrying this tool call.",
+            }, ensure_ascii=False)
         try:
             from hermes_cli.plugins import get_pre_tool_call_block_message
             _block_msg = get_pre_tool_call_block_message(
@@ -507,12 +553,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
-        if _block_msg is None:
+        if _block_msg is None and _skill_gate_msg is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _execution_blocked = _skill_gate_msg is not None or _block_msg is not None or _guardrail_block_decision is not None
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -586,7 +632,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if _block_msg is not None:
+        if _skill_gate_msg is not None:
+            # Tool blocked by skill-router mandatory-skill policy — return error without executing.
+            function_result = _skill_gate_msg
+            tool_duration = 0.0
+        elif _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
@@ -811,6 +861,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result[:200] if len(function_result) > 200 else function_result
             )
         if _is_error_result:
+            try:
+                from agent.skill_router import runtime_reroute_guidance_for_tool_result
+                _reroute_hint = runtime_reroute_guidance_for_tool_result(
+                    function_name,
+                    function_result,
+                    getattr(agent, "_skill_route_decision", None),
+                    failed=True,
+                )
+                if _reroute_hint and isinstance(function_result, str):
+                    function_result += _reroute_hint
+                    result_preview = function_result if agent.verbose_logging else (
+                        function_result[:200] if len(function_result) > 200 else function_result
+                    )
+            except Exception:
+                pass
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)

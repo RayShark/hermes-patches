@@ -409,6 +409,9 @@ class MemoryWritePipeline:
                     'credential_route': 'procedural_memory',
                     'exam_context': 'user_fact',
                     'correction_learning_event': 'procedural_memory',
+                    'active_workstream_context': 'procedural_memory',
+                    'project_identity_verification': 'procedural_memory',
+                    'explicit_memory_request': 'procedural_memory',
                     'procedural_rule': 'rule',
                     'user_fact': 'preference' if '偏好' in sem.target_path else 'user_fact',
                     'project_fact': 'project_fact',
@@ -419,6 +422,9 @@ class MemoryWritePipeline:
                     'credential_route': 'tool_credential_route',
                     'exam_context': 'exam_context',
                     'correction_learning_event': 'agent_memory_workflow',
+                    'active_workstream_context': 'active_workstream_context',
+                    'project_identity_verification': 'project_identity_verification',
+                    'explicit_memory_request': 'explicit_memory_request',
                     'procedural_rule': 'procedural_rule',
                 }
                 sem_memory_type = sem_type_map.get(sem_kind, 'lesson')

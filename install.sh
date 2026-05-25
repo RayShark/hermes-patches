@@ -259,6 +259,7 @@ if [ -d "$HERMES_DIR/venv/lib/python3.11/site-packages/hindsight_api" ]; then
 fi
 find "$HERMES_DIR/agent" -name "conversation_loop*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "agent_runtime_helpers*.pyc" -delete 2>/dev/null
+find "$HERMES_DIR/agent" -name "tool_executor*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "system_prompt*.pyc" -delete 2>/dev/null
 echo "   ✅ .pyc 缓存已清理"
 

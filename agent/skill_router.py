@@ -572,6 +572,233 @@ def build_autoload_skill_messages(user_message: str, *, task_id: str | None = No
     return messages, decision
 
 
+_PREMATURE_FINAL_PATTERNS = [
+    r"要不要继续|是否继续|如果你愿意.*继续|需要我.*继续|要我.*继续",
+    r"下一步可以|后续可以|建议下一步|我可以帮你",
+    r"计划如下|我会先|我将会|可以按照.*步骤",
+]
+
+_SUBSTANTIVE_TOOL_NAMES = {
+    "terminal", "execute_code", "read_file", "search_files", "patch", "write_file",
+    "web_search", "web_extract", "browser_navigate", "browser_click", "browser_snapshot",
+    "delegate_task", "cronjob", "process",
+}
+
+
+def looks_like_premature_final(response_text: str, decision: SkillRouteDecision | None) -> bool:
+    """Return True when a long-horizon turn appears to stop with planning/clarification.
+
+    This is intentionally lightweight and deterministic.  The router's job is
+    not to prove task completion; it blocks the most common failure mode where a
+    model answers a deep-work/autonomous request with a plan or asks whether to
+    continue before using tools.
+    """
+    if not decision or not decision.classification.deep_work_required:
+        return False
+    text = (response_text or "").strip()
+    if not text:
+        return True
+    return bool(_matches_any(text, _PREMATURE_FINAL_PATTERNS))
+
+
+def count_substantive_tool_turns(messages: Sequence[Mapping[str, Any]]) -> int:
+    count = 0
+    for msg in messages or []:
+        if not isinstance(msg, Mapping) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            try:
+                name = tc.get("function", {}).get("name") if isinstance(tc, Mapping) else getattr(tc.function, "name", "")
+            except Exception:
+                name = ""
+            if name in _SUBSTANTIVE_TOOL_NAMES:
+                count += 1
+    return count
+
+
+def completion_gate_should_continue(
+    response_text: str,
+    decision: SkillRouteDecision | None,
+    messages: Sequence[Mapping[str, Any]],
+) -> tuple[bool, str]:
+    """Code-level CompletionGate used by conversation_loop before finalizing.
+
+    For long-horizon/deep-work requests, a first-turn final response with no
+    substantive tool evidence is almost always the exact failure mode the user
+    reported: plan-only output, fake clarification, or early stopping.  Block it
+    once by injecting a synthetic continuation message so the model must start
+    executing.  After substantive tools have run, the normal agent loop can
+    finalize or report a true blocker.
+    """
+    if not decision or not decision.classification.deep_work_required:
+        return False, "not_long_horizon"
+    tool_turns = count_substantive_tool_turns(messages)
+    if tool_turns <= 0:
+        return True, "long_horizon_no_substantive_tools"
+    if looks_like_premature_final(response_text, decision):
+        return True, "long_horizon_premature_final_pattern"
+    return False, "pass"
+
+
+def build_completion_gate_continue_message(reason: str, decision: SkillRouteDecision | None) -> dict[str, str]:
+    skills = ", ".join((decision.mandatory_skills if decision else []) or [])
+    return {
+        "role": "user",
+        "content": (
+            "[Hermes Skill Router Completion Gate]\n"
+            f"Blocked premature final response: {reason}. "
+            f"Mandatory skills for this route: {skills or 'none recorded'}. "
+            "This is a long-horizon/autonomous task. Do not ask whether to continue "
+            "and do not stop with a plan. Take the next concrete tool-backed action now: "
+            "inspect files/repo/context, update todo/state, execute the repair/research/test step, "
+            "and only final after verified completion or a true blocker."
+        ),
+    }
+
+
+def skill_gate_for_tool(tool_name: str, decision: SkillRouteDecision | None) -> tuple[bool, str]:
+    """Lightweight tool-call-time gate: returns (allowed, reason)."""
+    if not decision:
+        return True, "no_route_decision"
+    mandatory = set(decision.mandatory_skills)
+    loaded = set(decision.loaded_skills)
+    missing_loaded = sorted(mandatory - loaded)
+    if missing_loaded:
+        return False, "mandatory_skills_not_loaded:" + ",".join(missing_loaded)
+    if tool_name in {"terminal", "patch", "write_file", "execute_code"} and decision.classification.hermes_agent_task and "hermes-agent" not in loaded:
+        return False, "hermes_agent_tool_without_hermes_agent_skill"
+    if tool_name in {"cronjob"} and "cron-management" in mandatory and "cron-management" not in loaded:
+        return False, "cron_tool_without_cron_skill"
+    return True, "pass"
+
+
+def runtime_reroute_guidance_for_tool_result(
+    tool_name: str,
+    tool_result: Any,
+    decision: SkillRouteDecision | None,
+    *,
+    failed: bool,
+) -> str:
+    """Return a runtime rerouting hint after stage/tool failure signals.
+
+    This does not replace the main router. It is the in-loop reroute layer: when
+    a long-horizon task hits a failed tool/test/build/edit, the next model call
+    receives an explicit instruction to reroute through the mandatory skills,
+    repair, and verify instead of summarising or stopping.
+    """
+    if not failed or not decision or not decision.classification.deep_work_required:
+        return ""
+    mandatory = ", ".join(decision.mandatory_skills or [])
+    return (
+        "\n\n[Hermes Skill Router Runtime Re-Route]\n"
+        f"Tool `{tool_name}` produced a failure signal during a long-horizon task. "
+        f"Active mandatory skills: {mandatory or 'none recorded'}. "
+        "Re-evaluate the route before the next action: inspect the failure, load any missing supporting skill if needed, "
+        "repair the root cause, rerun the relevant verification gate, and do not final until the failure is fixed or a true blocker is proven."
+    )
+
+
+def model_rerank_skill_candidates(
+    user_message: str,
+    candidates: Sequence[str],
+    manifests: Mapping[str, SkillManifest] | None = None,
+    *,
+    classifier: Any | None = None,
+) -> dict[str, Any]:
+    """Optional model-based semantic rerank hook with deterministic fail-closed fallback.
+
+    `classifier` is an injected callable for tests or deployments. It should
+    return JSON or a dict with selected_skills/mandatory_skills/rejected_skills.
+    When unavailable or invalid, the function returns the original candidates
+    and marks fallback_used=True. This keeps the architecture model-ready without
+    making core routing depend on a live API call.
+    """
+    base = list(dict.fromkeys(candidates or []))
+    if classifier is None:
+        return {
+            "selected_skills": base,
+            "mandatory_skills": [],
+            "rejected_skills": {},
+            "confidence": 0.0,
+            "fallback_used": True,
+            "reason": "classifier_unavailable",
+        }
+    manifest_payload = []
+    for name in base:
+        m = (manifests or {}).get(name) or (manifests or {}).get(name.lower().replace("_", "-"))
+        manifest_payload.append({
+            "name": name,
+            "description": getattr(m, "description", "") if m else "",
+            "tags": getattr(m, "tags", []) if m else [],
+            "triggers": getattr(m, "triggers", []) if m else [],
+            "task_types": getattr(m, "task_types", []) if m else [],
+        })
+    prompt = {
+        "task": "semantic_skill_rerank",
+        "user_message": user_message,
+        "candidates": manifest_payload,
+        "required_output": ["selected_skills", "mandatory_skills", "rejected_skills", "confidence"],
+    }
+    try:
+        raw = classifier(json.dumps(prompt, ensure_ascii=False))
+        data = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        selected = [s for s in _as_list(data.get("selected_skills")) if s in base]
+        mandatory = [s for s in _as_list(data.get("mandatory_skills")) if s in base]
+        rejected_raw_obj = data.get("rejected_skills")
+        rejected_raw = rejected_raw_obj if isinstance(rejected_raw_obj, Mapping) else {}
+        return {
+            "selected_skills": selected or base,
+            "mandatory_skills": mandatory,
+            "rejected_skills": {str(k): str(v) for k, v in rejected_raw.items()},
+            "confidence": float(data.get("confidence") or 0.0),
+            "fallback_used": False,
+            "reason": str(data.get("reason") or "model_rerank"),
+        }
+    except Exception as exc:
+        return {
+            "selected_skills": base,
+            "mandatory_skills": [],
+            "rejected_skills": {},
+            "confidence": 0.0,
+            "fallback_used": True,
+            "reason": f"classifier_error:{exc.__class__.__name__}",
+        }
+
+
+def routing_failures_to_eval_cases(failure_log: str | Path | None = None, output_path: str | Path | None = None) -> Path:
+    """Convert sanitized routing-failure JSONL records into regression eval cases."""
+    base = Path(get_hermes_home()) / "logs" / "skill_routing"
+    src = Path(failure_log) if failure_log else base / "routing_failures.jsonl"
+    dst = Path(output_path) if output_path else base / "routing_eval_cases.jsonl"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if not src.exists():
+        dst.write_text("", encoding="utf-8")
+        return dst
+    out_lines: list[str] = []
+    for line in src.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        case = {
+            "id": "routing-failure-" + str(rec.get("user_message_sha256_16") or "unknown"),
+            "source": "routing_failure_log",
+            "input_ref": {"user_message_sha256_16": rec.get("user_message_sha256_16", "")},
+            "expected_skills": rec.get("expected_skills", []),
+            "assertions": [
+                "expected_skills_selected_or_loaded",
+                "no_raw_user_message_in_fixture",
+                "completion_gate_enabled_for_long_horizon",
+            ],
+            "classification": rec.get("classification", {}),
+        }
+        out_lines.append(json.dumps(case, ensure_ascii=False, sort_keys=True))
+    dst.write_text("\n".join(out_lines) + ("\n" if out_lines else ""), encoding="utf-8")
+    return dst
+
+
 def log_skill_route_decision(decision: SkillRouteDecision, *, user_message: str, session_id: str | None = None, platform: str | None = None) -> None:
     try:
         log_dir = Path(get_hermes_home()) / "logs" / "skill_routing"
