@@ -776,6 +776,10 @@ def init_agent(
                 from hermes_cli.models import copilot_default_headers
 
                 client_kwargs["default_headers"] = copilot_default_headers()
+            elif base_url_host_matches(effective_base, "gw2.oops.asia"):
+                client_kwargs["default_headers"] = {
+                    "User-Agent": "curl/8.0",
+                }
             elif base_url_host_matches(effective_base, "api.kimi.com"):
                 client_kwargs["default_headers"] = {
                     "User-Agent": "claude-code/0.1.0",
