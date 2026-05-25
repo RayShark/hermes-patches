@@ -371,14 +371,16 @@ class GraphService:
                         if resolved:
                             parent_uuid = resolved["node_uuid"]
                         else:
-                            # Create intermediate node
+                            # Create intermediate node.  Under RLS, mg_memories
+                            # visibility is inherited from mg_paths, so create
+                            # the edge/path before inserting the node memory.
                             mid_uuid = str(uuid_lib.uuid4())
                             await self._ensure_node(session, mid_uuid)
-                            await self._insert_memory(session, mid_uuid, f"[auto-created: {next_path}]")
                             edge, _ = await self._get_or_create_edge(
                                 session, parent_uuid, mid_uuid, seg, priority=0
                             )
                             await self._insert_path(session, namespace, domain, next_path, edge.id, mid_uuid)
+                            await self._insert_memory(session, mid_uuid, f"[auto-created: {next_path}]")
                             parent_uuid = mid_uuid
                         current_path = next_path
                 else:
@@ -394,16 +396,18 @@ class GraphService:
                 num = await self._get_next_child_number(session, parent_uuid)
                 title = f"node-{num}"
 
-            # Create node + memory
+            # Create node, path, then memory.  mg_memories RLS derives access
+            # from mg_paths; inserting memory before the path exists is rejected
+            # for least-privileged mg_app sessions.
             child_uuid = str(uuid_lib.uuid4())
             await self._ensure_node(session, child_uuid)
-            memory = await self._insert_memory(session, child_uuid, content)
 
             # Create edge + paths
             edge = await self._create_edge_with_paths(
                 session, parent_uuid, child_uuid, title, priority,
                 disclosure, namespace, domain, parent_path
             )
+            memory = await self._insert_memory(session, child_uuid, content)
 
             await session.commit()
             try:
