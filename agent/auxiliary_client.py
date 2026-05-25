@@ -1504,15 +1504,15 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             elif base_url_host_matches(base_url, "api.githubcopilot.com"):
                 from hermes_cli.models import copilot_default_headers
 
-                extra["default_headers"] = copilot_default_headers()
+                merge_default_headers(extra, copilot_default_headers())
             elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
-                extra["default_headers"] = build_nvidia_nim_headers(base_url)
+                merge_default_headers(extra, build_nvidia_nim_headers(base_url))
             else:
                 try:
                     from providers import get_provider_profile as _gpf_aux
                     _ph_aux = _gpf_aux(provider_id)
                     if _ph_aux and _ph_aux.default_headers:
-                        extra["default_headers"] = dict(_ph_aux.default_headers)
+                        merge_default_headers(extra, _ph_aux.default_headers)
                 except Exception:
                     pass
             _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
@@ -1877,6 +1877,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
+    merge_default_headers(_extra, custom_provider_default_headers(base_url=custom_base))
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
@@ -3088,18 +3089,23 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         "base_url": str(sync_client.base_url),
     }
     sync_base_url = str(sync_client.base_url)
+    sync_headers = getattr(sync_client, "_custom_headers", None)
+    if not sync_headers:
+        sync_headers = getattr(sync_client, "_default_headers", None)
+    merge_default_headers(async_kwargs, sync_headers if isinstance(sync_headers, dict) else None)
+    merge_default_headers(async_kwargs, custom_provider_default_headers(base_url=sync_base_url))
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
-        async_kwargs["default_headers"] = build_or_headers()
+        merge_default_headers(async_kwargs, build_or_headers())
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
         from hermes_cli.copilot_auth import copilot_request_headers
 
-        async_kwargs["default_headers"] = copilot_request_headers(
+        merge_default_headers(async_kwargs, copilot_request_headers(
             is_agent_turn=True, is_vision=is_vision
-        )
+        ))
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
-        async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+        merge_default_headers(async_kwargs, {"User-Agent": "claude-code/0.1.0"})
     elif base_url_host_matches(sync_base_url, "integrate.api.nvidia.com"):
-        async_kwargs["default_headers"] = build_nvidia_nim_headers(sync_base_url)
+        merge_default_headers(async_kwargs, build_nvidia_nim_headers(sync_base_url))
     else:
         # Fall back to profile.default_headers for providers that declare
         # client-level headers on their ProviderProfile (e.g. attribution
@@ -3111,7 +3117,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             if _inferred:
                 _ph_async = _gpf_async(_inferred)
                 if _ph_async and _ph_async.default_headers:
-                    async_kwargs["default_headers"] = dict(_ph_async.default_headers)
+                    merge_default_headers(async_kwargs, _ph_async.default_headers)
         except Exception:
             pass
     return AsyncOpenAI(**async_kwargs), model

@@ -1369,6 +1369,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "api_key": effective_key,
             "base_url": effective_base,
         }
+        try:
+            from agent.auxiliary_client import custom_provider_default_headers, merge_default_headers
+            merge_default_headers(
+                agent._client_kwargs,
+                custom_provider_default_headers(new_provider, effective_base),
+            )
+        except Exception:
+            pass
         _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
         if _sm_timeout is not None:
             agent._client_kwargs["timeout"] = _sm_timeout
