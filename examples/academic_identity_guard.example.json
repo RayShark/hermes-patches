@@ -1,0 +1,11 @@
+{
+  "users": {
+    "1234567890": {
+      "label": "StudentName",
+      "academic_triggers": ["exam", "revision", "study", "考试", "温书", "复习", "学业"],
+      "allowed_subjects": ["Physics", "Economics", "ICT"],
+      "blocked_subjects": ["Geography", "Chemistry", "Biology", "History", "M1", "M2"],
+      "rationale": "Example only: replace with the student's verified subjects before enabling."
+    }
+  }
+}

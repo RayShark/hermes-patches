@@ -89,7 +89,7 @@ if [ -d "$PATCHES_DIR/agent/memory_graph" ]; then
 fi
 
 # 3. Copy tools and DB/session state files
-for tool_file in memory_graph_tool.py session_search_tool.py image_generation_tool.py; do
+for tool_file in memory_graph_tool.py session_search_tool.py image_generation_tool.py cronjob_tools.py; do
     if [ -f "$PATCHES_DIR/tools/$tool_file" ]; then
         cp "$PATCHES_DIR/tools/$tool_file" "$HERMES_DIR/tools/"
         echo "   ✅ tools/$tool_file 已复制"
@@ -207,6 +207,10 @@ fi
 if [ -f "$PATCHES_DIR/memory_write_config.yaml" ]; then
     cp "$PATCHES_DIR/memory_write_config.yaml" "$HOME/.hermes/"
     echo "   ✅ memory_write_config.yaml 已复制"
+fi
+if [ -f "$PATCHES_DIR/examples/academic_identity_guard.example.json" ] && [ ! -f "$HOME/.hermes/academic_identity_guard.json" ]; then
+    cp "$PATCHES_DIR/examples/academic_identity_guard.example.json" "$HOME/.hermes/academic_identity_guard.json"
+    echo "   ✅ academic_identity_guard.json example 已初始化（请按实际用户科目修改）"
 fi
 
 # 5. Copy default memory policy
