@@ -8,3 +8,9 @@ rule:
     - pattern: "'/root/.hermes'"
     - pattern: '"/root/.hermes/$PATH"'
     - pattern: "'/root/.hermes/$PATH'"
+    - pattern: '"/root/.hermes/$A/$B"'
+    - pattern: "'/root/.hermes/$A/$B'"
+    - pattern: '"/root/.hermes/$A/$B/$C"'
+    - pattern: "'/root/.hermes/$A/$B/$C'"
+    - pattern: '"/root/.hermes/$A/$B/$C/$D"'
+    - pattern: "'/root/.hermes/$A/$B/$C/$D'"

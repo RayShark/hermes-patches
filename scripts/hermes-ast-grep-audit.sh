@@ -85,6 +85,29 @@ scan_target() {
     fi
     rm -f "$out"
   done
+
+  # AST rules are ideal for structural anti-patterns, but deployment-specific
+  # absolute path literals are better guarded with a precise text fallback:
+  # ast-grep Python string matching can miss deeper literal path variants.
+  out="$(mktemp)"
+  set +e
+  grep -RInE --include='*.py' --include='*.pyi' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+    --exclude-dir='.git' --exclude-dir='node_modules' --exclude-dir='__pycache__' --exclude-dir='venv' --exclude-dir='.venv' \
+    '(["'"'"'`]/root/\.hermes(/[^"'"'"'`]*)?["'"'"'`])' "$target" >"$out" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ] && [ -s "$out" ]; then
+    count=$(wc -l <"$out" | tr -d ' ')
+    MATCHES=$((MATCHES + count))
+    warn "$label hardcoded /root/.hermes literal fallback matched (${count})"
+    sed 's/^/  /' "$out" | head -120
+  elif [ "$rc" -gt 1 ]; then
+    fail "hardcoded /root/.hermes fallback scan failed on $label"
+    sed 's/^/  /' "$out" | head -80
+  else
+    ok "$label hardcoded /root/.hermes literal fallback clean"
+  fi
+  rm -f "$out"
 }
 
 scan_target "$PATCHES_DIR" "patches"
