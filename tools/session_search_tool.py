@@ -412,8 +412,8 @@ def session_search(
         try:
             from hermes_state import SessionDB
             db = SessionDB()
-        except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
+        except Exception as e:
+            logging.debug("SessionDB unavailable for session_search: %s", e, exc_info=True)
             from hermes_state import format_session_db_unavailable
             return tool_error(format_session_db_unavailable(), success=False)
 
