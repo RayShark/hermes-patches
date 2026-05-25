@@ -608,6 +608,8 @@ registry.register(
         sort=args.get("sort"),
         db=kw.get("db"),
         current_session_id=kw.get("current_session_id"),
+        user_id=(kw.get("user_id") or kw.get("session_user_id") or kw.get("chat_id") or ""),
+        source=(kw.get("source") or kw.get("platform") or ""),
     ),
     check_fn=check_session_search_requirements,
     emoji="🔍",
