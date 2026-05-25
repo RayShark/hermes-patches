@@ -154,6 +154,23 @@ if command -v curl >/dev/null 2>&1; then
   fi
 fi
 
+# AST structural audit: catches high-risk code shapes that plain grep misses.
+if [ -x "$HOME/.hermes/scripts/hermes-ast-grep-audit.sh" ]; then
+  if AST_GREP_FAIL_ON_WARNINGS="${AST_GREP_FAIL_ON_WARNINGS:-0}" "$HOME/.hermes/scripts/hermes-ast-grep-audit.sh"; then
+    ok "ast-grep structural audit completed"
+  else
+    fail "ast-grep structural audit failed"
+  fi
+elif [ -f "$PATCHES_DIR/scripts/hermes-ast-grep-audit.sh" ]; then
+  if AST_GREP_FAIL_ON_WARNINGS="${AST_GREP_FAIL_ON_WARNINGS:-0}" bash "$PATCHES_DIR/scripts/hermes-ast-grep-audit.sh"; then
+    ok "ast-grep structural audit completed"
+  else
+    fail "ast-grep structural audit failed"
+  fi
+else
+  warn "ast-grep structural audit script not installed; skipped"
+fi
+
 # Python import smoke: catches copied files that exist but fail at import time.
 if [ -x "$HERMES_DIR/venv/bin/python" ]; then
   "$HERMES_DIR/venv/bin/python" - <<'PY' || exit_code=$?

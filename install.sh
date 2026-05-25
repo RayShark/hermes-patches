@@ -233,13 +233,32 @@ find "$HERMES_DIR/agent" -name "agent_runtime_helpers*.pyc" -delete 2>/dev/null
 find "$HERMES_DIR/agent" -name "system_prompt*.pyc" -delete 2>/dev/null
 echo "   ✅ .pyc 缓存已清理"
 
-# 6b. Install patch-chain guard so future updates verify GitHub/local patch tree,
-# installed Hermes code, Memory Graph health, and dashboard protected APIs together.
+# 6b. Install patch-chain guard and structural audit helpers so future updates verify
+# GitHub/local patch tree, installed Hermes code, Memory Graph health, dashboard
+# protected APIs, and AST-level high-risk code patterns together.
 if [ -f "$PATCHES_DIR/scripts/hermes-patch-chain-guard.sh" ]; then
     mkdir -p "$HOME/.hermes/scripts"
     cp "$PATCHES_DIR/scripts/hermes-patch-chain-guard.sh" "$HOME/.hermes/scripts/hermes-patch-chain-guard.sh"
     chmod +x "$HOME/.hermes/scripts/hermes-patch-chain-guard.sh"
     echo "   ✅ hermes-patch-chain-guard.sh 已安装"
+fi
+if [ -f "$PATCHES_DIR/scripts/hermes-ast-grep-audit.sh" ]; then
+    mkdir -p "$HOME/.hermes/scripts"
+    cp "$PATCHES_DIR/scripts/hermes-ast-grep-audit.sh" "$HOME/.hermes/scripts/hermes-ast-grep-audit.sh"
+    chmod +x "$HOME/.hermes/scripts/hermes-ast-grep-audit.sh"
+    echo "   ✅ hermes-ast-grep-audit.sh 已安装"
+fi
+if [ -d "$PATCHES_DIR/ast-grep-rules" ]; then
+    mkdir -p "$HOME/.hermes/ast-grep-rules"
+    cp -R "$PATCHES_DIR/ast-grep-rules/." "$HOME/.hermes/ast-grep-rules/"
+    echo "   ✅ ast-grep structural audit rules 已安装"
+fi
+if ! command -v ast-grep >/dev/null 2>&1; then
+    if command -v npm >/dev/null 2>&1; then
+        npm install -g @ast-grep/cli >/dev/null 2>&1 || echo "   ⚠️ ast-grep 自动安装失败，可手动运行: npm install -g @ast-grep/cli"
+    else
+        echo "   ⚠️ npm 不存在，跳过 ast-grep 安装；可手动安装 @ast-grep/cli"
+    fi
 fi
 if [ -f "$PATCHES_DIR/scripts/deploy-standalone-memory-graph-webui.sh" ]; then
     mkdir -p "$HOME/.hermes/scripts"

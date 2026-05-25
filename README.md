@@ -104,6 +104,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 - Credential pool /model 切换保持
 - Cron 多用户投递隔离
 - Telegram 群聊 visible-but-ignored 上下文窗口（非全量历史回填）
+- ast-grep 结构化代码审计（补丁链 guard 集成；用于发现宽泛异常吞噬、硬编码私有路径/ID、空 catch 等高风险结构）
 
 ## 安装内容
 
@@ -144,6 +145,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Cyrene963/hermes-patches/main/
 ### 工具/平台修复
 - session_search 工具增强
 - toolsets.py 记忆工具集定义
+- ast-grep 结构化代码审计：`scripts/hermes-ast-grep-audit.sh` + `ast-grep-rules/*.yml`，安装后集成到 patch-chain guard。默认只报告 warning，不阻断安装；需要硬阻断时设置 `AST_GREP_FAIL_ON_WARNINGS=1`。
 - Telegram 群聊 visible-but-ignored context window：privacy mode 关闭后，普通群消息虽被 `require_mention` 忽略，也会进入短期同群/同 topic 缓存；下一次 @bot 时通过 `MessageEvent.channel_context` 注入。不是 Bot API 全量历史回填，Telegram 未送达的消息仍无法恢复。
 
 #### Telegram 群上下文配置

@@ -238,20 +238,26 @@ class MemoryWritePipeline:
                     reason='Sensitive rule requires review' if is_sensitive else 'User stated a rule'
                 ))
 
-        # Extract facts with entity + attribute
+        # Extract facts with entity + attribute from the *user message only*.
+        # The assistant response often contains explanations, headings, and quoted
+        # context that are not user-confirmed facts; using it here caused ordinary
+        # dialogue to be miswritten as project tech_stack memories.
+        extraction_text = user_msg
         entity_patterns = [
             # Quoted entity names: “Project X” / 「学生A」 / 《项目A》
             (r'[“"「《]([^”"」》]{2,40})[”"」》]', 'entity'),
-            # Generic CJK proper-noun-ish subject followed by fact context.
-            (r'([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_-]{1,39})(?=.*?(成绩|分数|考试|mock|技术栈|部署|数据库|配置|服务器|架构))', 'entity'),
+            # Explicit project/entity introducers. Keep this narrow: project facts
+            # require a named project, not any CJK phrase before 配置/用/架构.
+            (r'(?:项目|project|应用|app|仓库|repo)\s*[:：]?\s*([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_-]{1,39})(?=.*?(成绩|分数|考试|mock|技术栈|部署|数据库|配置|服务器|架构|用|换成|改成|迁移))', 'entity'),
         ]
         for pattern, etype in entity_patterns:
-            if re.search(pattern, combined):
-                entity_name = re.search(pattern, combined).group(1)
+            match = re.search(pattern, extraction_text, re.IGNORECASE)
+            if match:
+                entity_name = match.group(1)
 
                 # Check for specific fact types
-                if re.search(r'(成绩|分数|考试|mock)', combined):
-                    score_match = re.search(r'(\d+)\s*分', combined)
+                if re.search(r'(成绩|分数|考试|mock)', extraction_text):
+                    score_match = re.search(r'(\d+)\s*分', extraction_text)
                     score_val = score_match.group(1) if score_match else '?'
                     candidates.append(CandidateFact(
                         subject=entity_name, predicate='exam_score',
@@ -263,20 +269,26 @@ class MemoryWritePipeline:
                         source_type='user_direct'
                     ))
 
-                # Check for project facts (技术栈/部署/数据库/配置)
-                if re.search(r'(技术栈|部署|数据库|配置|服务器|架构|用|换成|改成|迁移)', combined):
-                    # Extract the value after the keyword
-                    value_match = re.search(r'(?:用|换成|改成|是)\s*(\S+)', combined)
-                    value = value_match.group(1) if value_match else '?'
-                    candidates.append(CandidateFact(
-                        subject=entity_name, predicate='tech_stack',
-                        object_value=value,
-                        importance=0.90, memory_type='project_fact',
-                        target_store='memory_graph',
-                        target_path=f'项目/{entity_name}/技术栈',
-                        evidence_quote=user_msg, confidence=0.90,
-                        source_type='user_direct'
-                    ))
+                # Check for project facts (技术栈/部署/数据库/配置). These are
+                # review-only unless the user states an explicit project and an
+                # explicit value after a strong assignment verb.
+                if re.search(r'(技术栈|部署|数据库|配置|服务器|架构|用|换成|改成|迁移)', extraction_text):
+                    value_match = re.search(
+                        r'(?:技术栈|数据库|框架|部署|配置|服务器|架构)?\s*(?:用|使用|采用|换成|改成|迁移到|是)\s*([^\n。；;，,]{2,80})',
+                        extraction_text,
+                    )
+                    if value_match:
+                        value = value_match.group(1).strip()
+                        candidates.append(CandidateFact(
+                            subject=entity_name, predicate='tech_stack',
+                            object_value=value,
+                            importance=0.90, memory_type='project_fact',
+                            target_store='review',
+                            target_path=f'项目/{entity_name}/技术栈',
+                            evidence_quote=user_msg, confidence=0.80,
+                            source_type='user_direct', requires_review=True,
+                            reason='Project tech-stack facts require semantic review before writing'
+                        ))
 
 
         # Extract preferences
