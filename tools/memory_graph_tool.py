@@ -31,23 +31,23 @@ def _get_namespace() -> str:
         ns = _rc_get_ns()
         if ns:
             return ns
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.debug("RequestContext namespace provider unavailable: %s", exc)
     # Fallback to plugin context
     try:
         from _hermes_user_memory.memory_graph import get_current_namespace
         ns = get_current_namespace()
         if ns:
             return ns
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.debug("User memory namespace provider unavailable: %s", exc)
     try:
         from plugins.memory_graph import get_current_namespace
         ns = get_current_namespace()
         if ns:
             return ns
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.debug("Plugin namespace provider unavailable: %s", exc)
     try:
         import importlib.util
         from pathlib import Path
@@ -59,8 +59,8 @@ def _get_namespace() -> str:
             ns = mod.get_current_namespace()
             if ns:
                 return ns
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to load memory-graph plugin namespace provider: %s", exc, exc_info=True)
     # Terminal/CLI fallback from ~/.hermes/config.yaml.
     try:
         import yaml
@@ -69,8 +69,8 @@ def _get_namespace() -> str:
         default_user = str((cfg.get("memory_graph") or {}).get("default_terminal_user") or "").strip()
         if default_user:
             return f"telegram:{default_user}"
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to read default terminal namespace from config: %s", exc, exc_info=True)
     return ""
 
 
@@ -290,7 +290,8 @@ def _check_memory_graph():
             capture_output=True, text=True, timeout=5,
         )
         return result.returncode == 0 and "1" in result.stdout
-    except Exception:
+    except Exception as exc:
+        logger.debug("Memory Graph DB check failed: %s", exc, exc_info=True)
         return False
 
 

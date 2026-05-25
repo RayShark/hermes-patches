@@ -38,8 +38,8 @@ def _read_env_file_value(key: str) -> str:
             k, v = line.split("=", 1)
             if k.strip() == key:
                 return v.strip().strip('"').strip("'")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to read Memory Graph env key %s: %s", key, exc, exc_info=True)
     return ""
 
 
@@ -62,7 +62,8 @@ def _read_config_memory_graph() -> dict:
         data = yaml.safe_load(cfg_path.read_text()) or {}
         mg = data.get("memory_graph") or {}
         return mg if isinstance(mg, dict) else {}
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to read memory_graph config section: %s", exc, exc_info=True)
         return {}
 
 
@@ -81,8 +82,8 @@ def _current_rls_context() -> Tuple[str, bool]:
         if ctx:
             namespace = namespace or ctx.namespace
             is_admin = is_admin or bool(ctx.is_admin)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("RequestContext unavailable while resolving Memory Graph RLS context: %s", exc, exc_info=True)
 
     mg_cfg = _read_config_memory_graph()
     if not namespace:

@@ -245,8 +245,8 @@ def _scroll(
                         )
                         try:
                             session_meta = db.get_session(owning) or session_meta
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logging.debug("session metadata lookup failed during rebind: %s", e, exc_info=True)
                         session_id = owning
                 except Exception as e:
                     logging.debug("rebind get_messages_around failed: %s", e, exc_info=True)
@@ -349,7 +349,8 @@ def _discover(
 
         try:
             session_meta = db.get_session(lineage_root) or {}
-        except Exception:
+        except Exception as e:
+            logging.debug("session metadata lookup failed for lineage %s: %s", lineage_root, e, exc_info=True)
             session_meta = {}
 
         entry = {
@@ -467,7 +468,8 @@ def check_session_search_requirements() -> bool:
     try:
         from hermes_state import DEFAULT_DB_PATH
         return DEFAULT_DB_PATH.parent.exists()
-    except ImportError:
+    except ImportError as e:
+        logging.debug("SessionDB path unavailable for requirement check: %s", e)
         return False
 
 

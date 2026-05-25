@@ -344,6 +344,8 @@ class SearchIndexer:
                           {domain_clause}
                         ORDER BY
                             CASE WHEN sd.path ILIKE '%' || :raw_query || '%' OR sd.content ILIKE '%' || :raw_query || '%' THEN 0 ELSE 1 END ASC,
+                            namespace_rank ASC,
+                            score DESC,
                             CASE
                                 WHEN sd.path LIKE '用户档案%' THEN 0
                                 WHEN sd.path LIKE '项目%' THEN 1
@@ -352,8 +354,6 @@ class SearchIndexer:
                                 WHEN sd.path LIKE '经验教训%' THEN 4
                                 ELSE 5
                             END ASC,
-                            score DESC,
-                            namespace_rank ASC,
                             sd.priority ASC,
                             char_length(sd.path) ASC
                         LIMIT :candidate_limit
