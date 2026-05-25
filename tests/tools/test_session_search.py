@@ -9,6 +9,7 @@ All run zero LLM calls.
 """
 import json
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -106,7 +107,8 @@ class TestHiddenSources:
 
 class TestFormatTimestamp:
     def test_unix_timestamp(self):
-        out = _format_timestamp(1700000000)
+        sample_ts = int(datetime(2023, 11, 14, tzinfo=timezone.utc).timestamp())
+        out = _format_timestamp(sample_ts)
         assert "2023" in out
 
     def test_none(self):
