@@ -814,18 +814,20 @@ async function loadModelsAnalyticsWithRetry(days: number): Promise<{ data: Model
 }
 
 export default function ModelsPage() {
+  const bootstrap = typeof window !== "undefined" ? window.__HERMES_BOOTSTRAP__ : undefined;
   const [days, setDays] = useState(30);
-  const [data, setData] = useState<ModelsAnalyticsResponse | null>(null);
-  const [aux, setAux] = useState<AuxiliaryModelsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [analyticsNote, setAnalyticsNote] = useState<string | null>(null);
+  const [data, setData] = useState<ModelsAnalyticsResponse | null>(bootstrap?.models30 ?? null);
+  const [aux, setAux] = useState<AuxiliaryModelsResponse | null>(bootstrap?.auxiliary ?? null);
+  const [loading, setLoading] = useState(!bootstrap?.models30);
+  const [error, setError] = useState<string | null>(bootstrap?.models_error ? `Bootstrap analytics unavailable: ${bootstrap.models_error}` : null);
+  const [analyticsNote, setAnalyticsNote] = useState<string | null>(bootstrap?.models30 ? "Loaded from dashboard bootstrap data." : null);
   const [saveKey, setSaveKey] = useState(0);
   const loadRunId = useRef(0);
+  const skippedBootstrapLoad = useRef(false);
   // Gate the token/cost UI on `dashboard.show_token_analytics`.  See
   // hermes_cli/config.py for the rationale: the numbers exclude auxiliary
   // calls and retries, so they're misleading next to provider billing.
-  const [showTokens, setShowTokens] = useState(false);
+  const [showTokens, setShowTokens] = useState(bootstrap?.show_token_analytics === true);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
@@ -936,8 +938,13 @@ export default function ModelsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
+    if (bootstrap?.models30 && days === 30 && !skippedBootstrapLoad.current) {
+      skippedBootstrapLoad.current = true;
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [load, days, bootstrap?.models30]);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
